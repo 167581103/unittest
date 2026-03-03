@@ -1,4 +1,5 @@
-data
+data/dataset
+data/project
 *.pyc
 *.index
 lib/
