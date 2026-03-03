@@ -1,0 +1,13 @@
+data
+*.pyc
+*.index
+lib/
+*.exec
+*.html
+.env
+
+# 数据和结果文件
+*_metadata.json
+*_results.json
+*_dataset.json
+evaluation_results.json

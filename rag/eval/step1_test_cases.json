@@ -1,0 +1,795 @@
+[
+  {
+    "test_name": "testEscapedNewlineNotAllowedInStrictMode",
+    "test_code": "String json = \"\\\"\\\\\\n\\\"\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.setStrictness(Strictness.STRICT);\n\n    IOException expected = assertThrows(IOException.class, reader::nextString);\n    assertThat(expected)\n        .hasMessageThat()\n        .startsWith(\"Cannot escape a newline character in strict mode\");",
+    "methods_used": [
+      "setStrictness"
+    ],
+    "query": "在严格模式下，JsonReader如何处理换行符转义字符？"
+  },
+  {
+    "test_name": "testEscapedNewlineAllowedInDefaultMode",
+    "test_code": "String json = \"\\\"\\\\\\n\\\"\";\n    JsonReader reader = new JsonReader(reader(json));\n    assertThat(reader.nextString()).isEqualTo(\"\\n\");",
+    "methods_used": [
+      "nextString"
+    ],
+    "query": "在默认模式下，JsonReader是否允许解析转义的新行符？"
+  },
+  {
+    "test_name": "testStrictModeFailsToParseUnescapedControlCharacter",
+    "test_code": "String json = \"\\\"\\0\\\"\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.setStrictness(Strictness.STRICT);\n\n    IOException expected = assertThrows(IOException.class, reader::nextString);\n    assertThat(expected)\n        .hasMessageThat()\n        .startsWith(\n            \"Unescaped control characters (\\\\u0000-\\\\u001F) are not allowed in strict mode\");\n\n    json = \"\\\"\\t\\\"\";\n    reader = new JsonReader(reader(json));\n    reader.setStrictness(Strictness.STRICT);\n\n    expected = assertThrows(IOException.class, reader::nextString);\n    assertThat(expected)\n        .hasMessageThat()\n        .startsWith(\n            \"Unescaped control characters (\\\\u0000-\\\\u001F) are not allowed in strict mode\");\n\n    json = \"\\\"\\u001F\\\"\";\n    reader = new JsonReader(reader(json));\n    reader.setStrictness(Strictness.STRICT);\n\n    expected = assertThrows(IOException.class, reader::nextString);\n    assertThat(expected)\n        .hasMessageThat()\n        .startsWith(\n            \"Unescaped control characters (\\\\u0000-\\\\u001F) are not allowed in strict mode\");",
+    "methods_used": [
+      "setStrictness"
+    ],
+    "query": "JsonReader在严格模式下如何处理未转义的控制字符？"
+  },
+  {
+    "test_name": "testStrictModeAllowsOtherControlCharacters",
+    "test_code": "// JSON specification only forbids control characters U+0000 - U+001F, other control characters\n    // should be allowed\n    String json = \"\\\"\\u007F\\u009F\\\"\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.setStrictness(Strictness.STRICT);\n    assertThat(reader.nextString()).isEqualTo(\"\\u007F\\u009F\");",
+    "methods_used": [
+      "setStrictness",
+      "nextString"
+    ],
+    "query": "当JsonReader设置为严格模式时，它是否允许除U+0000-U+001F之外的控制字符？"
+  },
+  {
+    "test_name": "testNonStrictModeParsesUnescapedControlCharacter",
+    "test_code": "String json = \"\\\"\\t\\\"\";\n    JsonReader reader = new JsonReader(reader(json));\n    assertThat(reader.nextString()).isEqualTo(\"\\t\");",
+    "methods_used": [
+      "nextString"
+    ],
+    "query": "测试方法testNonStrictModeParsesUnescapedControlCharacter的目的何在？"
+  },
+  {
+    "test_name": "testCapitalizedTrueFailWhenStrict",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"TRUE\"));\n    reader.setStrictness(Strictness.STRICT);\n\n    IOException expected = assertThrows(IOException.class, reader::nextBoolean);\n    assertThat(expected)\n        .hasMessageThat()\n        .startsWith(\n            \"Use JsonReader.setStrictness(Strictness.LENIENT) to accept malformed JSON\"\n                + \" at line 1 column 1 path $\\n\");\n\n    reader = new JsonReader(reader(\"True\"));\n    reader.setStrictness(Strictness.STRICT);\n\n    expected = assertThrows(IOException.class, reader::nextBoolean);\n    assertThat(expected)\n        .hasMessageThat()\n        .startsWith(\n            \"Use JsonReader.setStrictness(Strictness.LENIENT) to accept malformed JSON\"\n                + \" at line 1 column 1 path $\\n\");",
+    "methods_used": [
+      "setStrictness"
+    ],
+    "query": "该测试方法测试的是什么情况会导致JsonReader在Strictness.STRICT模式下抛出异常？"
+  },
+  {
+    "test_name": "testCapitalizedFalseFailWhenStrict",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"FALSE\"));\n    reader.setStrictness(Strictness.STRICT);\n\n    IOException expected = assertThrows(IOException.class, reader::nextBoolean);\n    assertThat(expected)\n        .hasMessageThat()\n        .startsWith(\n            \"Use JsonReader.setStrictness(Strictness.LENIENT) to accept malformed JSON\"\n                + \" at line 1 column 1 path $\\n\");\n\n    reader = new JsonReader(reader(\"FaLse\"));\n    reader.setStrictness(Strictness.STRICT);\n\n    expected = assertThrows(IOException.class, reader::nextBoolean);\n    assertThat(expected)\n        .hasMessageThat()\n        .startsWith(\n            \"Use JsonReader.setStrictness(Strictness.LENIENT) to accept malformed JSON\"\n                + \" at line 1 column 1 path $\\n\");",
+    "methods_used": [
+      "setStrictness"
+    ],
+    "query": "当JsonReader设置为严格模式时，如何处理大小写不一致的布尔值字符串？"
+  },
+  {
+    "test_name": "testCapitalizedNullFailWhenStrict",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"NULL\"));\n    reader.setStrictness(Strictness.STRICT);\n\n    IOException expected = assertThrows(IOException.class, reader::nextNull);\n    assertThat(expected)\n        .hasMessageThat()\n        .startsWith(\n            \"Use JsonReader.setStrictness(Strictness.LENIENT) to accept malformed JSON\"\n                + \" at line 1 column 1 path $\\n\");\n\n    reader = new JsonReader(reader(\"nulL\"));\n    reader.setStrictness(Strictness.STRICT);\n\n    expected = assertThrows(IOException.class, reader::nextNull);\n    assertThat(expected)\n        .hasMessageThat()\n        .startsWith(\n            \"Use JsonReader.setStrictness(Strictness.LENIENT) to accept malformed JSON\"\n                + \" at line 1 column 1 path $\\n\");",
+    "methods_used": [
+      "setStrictness"
+    ],
+    "query": "当JsonReader设置为Strict模式时，如何处理小写null值？"
+  },
+  {
+    "test_name": "testReadArray",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[true, true]\"));\n    reader.beginArray();\n    assertThat(reader.nextBoolean()).isTrue();\n    assertThat(reader.nextBoolean()).isTrue();\n    reader.endArray();\n    assertThat(reader.peek()).isEqualTo(JsonToken.END_DOCUMENT);",
+    "methods_used": [
+      "endArray",
+      "beginArray",
+      "peek",
+      "nextBoolean"
+    ],
+    "query": "该测试方法验证了JsonReader如何处理包含两个true布尔值的JSON数组并到达文档末尾？"
+  },
+  {
+    "test_name": "testReadEmptyArray",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[]\"));\n    reader.beginArray();\n    assertThat(reader.hasNext()).isFalse();\n    reader.endArray();\n    assertThat(reader.peek()).isEqualTo(JsonToken.END_DOCUMENT);",
+    "methods_used": [
+      "peek",
+      "beginArray",
+      "hasNext",
+      "endArray"
+    ],
+    "query": "空数组读取后，JsonReader应返回END_DOCUMENT令牌吗？"
+  },
+  {
+    "test_name": "testSkipValueAtArrayEnd",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[]\"));\n    reader.beginArray();\n    reader.skipValue();\n    assertThat(reader.peek()).isEqualTo(JsonToken.END_DOCUMENT);\n    assertThat(reader.getPath()).isEqualTo(\"$\");",
+    "methods_used": [
+      "skipValue",
+      "peek",
+      "beginArray",
+      "getPath"
+    ],
+    "query": "这个测试方法验证了当数组结束时，skipValue方法是否能使JsonReader跳过数组结束后的值，并返回END_DOCUMENT和\"$\"路径？"
+  },
+  {
+    "test_name": "testEscapeCharacterQuoteInStrictMode",
+    "test_code": "String json = \"\\\"\\\\'\\\"\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.setStrictness(Strictness.STRICT);\n\n    IOException expected = assertThrows(IOException.class, reader::nextString);\n    assertThat(expected)\n        .hasMessageThat()\n        .startsWith(\"Invalid escaped character \\\"'\\\" in strict mode\");",
+    "methods_used": [
+      "setStrictness"
+    ],
+    "query": "在严格模式下，如何处理反斜杠后的单引号？"
+  },
+  {
+    "test_name": "testEscapeCharacterQuoteWithoutStrictMode",
+    "test_code": "String json = \"\\\"\\\\'\\\"\";\n    JsonReader reader = new JsonReader(reader(json));\n    assertThat(reader.nextString()).isEqualTo(\"'\");",
+    "methods_used": [
+      "nextString"
+    ],
+    "query": "在非严格模式下，如何处理包含转义引号的JSON字符串？"
+  },
+  {
+    "test_name": "testUnescapingInvalidCharacters",
+    "test_code": "String json = \"[\\\"\\\\u000g\\\"]\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.nextString());\n    assertThat(e)\n        .hasMessageThat()\n        .isEqualTo(\n            \"Malformed Unicode escape \\\\u000g at line 1 column 5 path $[0]\\n\"\n                + \"See https://github.com/google/gson/blob/main/Troubleshooting.md#malformed-json\");",
+    "methods_used": [
+      "beginArray",
+      "nextString"
+    ],
+    "query": "该测试方法测试的是什么情况下会抛出MalformedJsonException异常？"
+  },
+  {
+    "test_name": "testUnescapingTruncatedCharacters",
+    "test_code": "String json = \"[\\\"\\\\u000\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.nextString());\n    assertThat(e)\n        .hasMessageThat()\n        .isEqualTo(\n            \"Unterminated escape sequence at line 1 column 5 path $[0]\\n\"\n                + \"See https://github.com/google/gson/blob/main/Troubleshooting.md#malformed-json\");",
+    "methods_used": [
+      "beginArray",
+      "nextString"
+    ],
+    "query": "该测试方法验证的是在解析JSON字符串时，如果字符串中未完成的转义序列会导致什么异常？"
+  },
+  {
+    "test_name": "testUnescapingTruncatedSequence",
+    "test_code": "String json = \"[\\\"\\\\\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.nextString());\n    assertThat(e)\n        .hasMessageThat()\n        .isEqualTo(\n            \"Unterminated escape sequence at line 1 column 4 path $[0]\\n\"\n                + \"See https://github.com/google/gson/blob/main/Troubleshooting.md#malformed-json\");",
+    "methods_used": [
+      "beginArray",
+      "nextString"
+    ],
+    "query": "该测试方法测试的是什么情况会导致JsonReader解析失败？具体是什么错误信息？"
+  },
+  {
+    "test_name": "testIntegersWithFractionalPartSpecified",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[1.0,1.0,1.0]\"));\n    reader.beginArray();\n    assertThat(reader.nextDouble()).isEqualTo(1.0);\n    assertThat(reader.nextInt()).isEqualTo(1);\n    assertThat(reader.nextLong()).isEqualTo(1L);",
+    "methods_used": [
+      "nextInt",
+      "beginArray",
+      "nextLong",
+      "nextDouble"
+    ],
+    "query": "该测试方法验证了JsonReader在读取包含小数的整数序列时，依次调用nextInt、beginArray、nextLong和nextDouble方法是否能够正确解析并返回相应的数值类型？"
+  },
+  {
+    "test_name": "testDoubles",
+    "test_code": "String json =\n        \"[-0.0,\"\n            + \"1.0,\"\n            + \"1.7976931348623157E308,\"\n            + \"4.9E-324,\"\n            + \"0.0,\"\n            + \"0.00,\"\n            + \"-0.5,\"\n            + \"2.2250738585072014E-308,\"\n            + \"3.141592653589793,\"\n            + \"2.718281828459045,\"\n            + \"0,\"\n            + \"0.01,\"\n            + \"0e0,\"\n            + \"1e+0,\"\n            + \"1e-0,\"\n            + \"1e0000,\" // leading 0 is allowed for exponent\n            + \"1e00001,\"\n            + \"1e+1]\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.beginArray();\n    assertThat(reader.nextDouble()).isEqualTo(-0.0);\n    assertThat(reader.nextDouble()).isEqualTo(1.0);\n    assertThat(reader.nextDouble()).isEqualTo(1.7976931348623157E308);\n    assertThat(reader.nextDouble()).isEqualTo(4.9E-324);\n    assertThat(reader.nextDouble()).isEqualTo(0.0);\n    assertThat(reader.nextDouble()).isEqualTo(0.0);\n    assertThat(reader.nextDouble()).isEqualTo(-0.5);\n    assertThat(reader.nextDouble()).isEqualTo(2.2250738585072014E-308);\n    assertThat(reader.nextDouble()).isEqualTo(3.141592653589793);\n    assertThat(reader.nextDouble()).isEqualTo(2.718281828459045);\n    assertThat(reader.nextDouble()).isEqualTo(0.0);\n    assertThat(reader.nextDouble()).isEqualTo(0.01);\n    assertThat(reader.nextDouble()).isEqualTo(0.0);\n    assertThat(reader.nextDouble()).isEqualTo(1.0);\n    assertThat(reader.nextDouble()).isEqualTo(1.0);\n    assertThat(reader.nextDouble()).isEqualTo(1.0);\n    assertThat(reader.nextDouble()).isEqualTo(10.0);\n    assertThat(reader.nextDouble()).isEqualTo(10.0);\n    reader.endArray();\n    assertThat(reader.peek()).isEqualTo(JsonToken.END_DOCUMENT);",
+    "methods_used": [
+      "endArray",
+      "beginArray",
+      "peek",
+      "nextDouble"
+    ],
+    "query": "这个测试方法验证了JsonReader对什么范围的double值解析是否正确？"
+  },
+  {
+    "test_name": "testStrictNonFiniteDoubles",
+    "test_code": "String json = \"[NaN]\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.nextDouble());\n    assertStrictError(e, \"line 1 column 2 path $[0]\");",
+    "methods_used": [
+      "beginArray",
+      "nextDouble"
+    ],
+    "query": "此测试方法验证了当JsonReader解析非有限Double（NaN）时，是否能正确抛出MalformedJsonException异常以及异常消息是否准确？"
+  },
+  {
+    "test_name": "testStrictQuotedNonFiniteDoubles",
+    "test_code": "String json = \"[\\\"NaN\\\"]\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.nextDouble());\n    assertThat(e)\n        .hasMessageThat()\n        .isEqualTo(\n            \"JSON forbids NaN and infinities: NaN at line 1 column 7 path $[0]\\n\"\n                + \"See https://github.com/google/gson/blob/main/Troubleshooting.md#malformed-json\");",
+    "methods_used": [
+      "beginArray",
+      "nextDouble"
+    ],
+    "query": "测试方法testStrictQuotedNonFiniteDoubles是检测什么情况会抛出MalformedJsonException异常？"
+  },
+  {
+    "test_name": "testLenientNonFiniteDoubles",
+    "test_code": "String json = \"[NaN, -Infinity, Infinity]\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextDouble()).isNaN();\n    assertThat(reader.nextDouble()).isEqualTo(Double.NEGATIVE_INFINITY);\n    assertThat(reader.nextDouble()).isEqualTo(Double.POSITIVE_INFINITY);\n    reader.endArray();",
+    "methods_used": [
+      "setStrictness",
+      "endArray",
+      "beginArray",
+      "nextDouble"
+    ],
+    "query": "在何种情况下，testLenientNonFiniteDoubles方法会验证JsonReader能正确解析非有限双精度数值？"
+  },
+  {
+    "test_name": "testLenientQuotedNonFiniteDoubles",
+    "test_code": "String json = \"[\\\"NaN\\\", \\\"-Infinity\\\", \\\"Infinity\\\"]\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextDouble()).isNaN();\n    assertThat(reader.nextDouble()).isEqualTo(Double.NEGATIVE_INFINITY);\n    assertThat(reader.nextDouble()).isEqualTo(Double.POSITIVE_INFINITY);\n    reader.endArray();",
+    "methods_used": [
+      "setStrictness",
+      "endArray",
+      "beginArray",
+      "nextDouble"
+    ],
+    "query": "lenient模式下，JsonReader如何处理非 finite 的双精度浮点数？"
+  },
+  {
+    "test_name": "testStrictNonFiniteDoublesWithSkipValue",
+    "test_code": "String json = \"[NaN]\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.skipValue());\n    assertStrictError(e, \"line 1 column 2 path $[0]\");",
+    "methods_used": [
+      "skipValue",
+      "beginArray"
+    ],
+    "query": "该测试方法测试的是什么情况会抛出MalformedJsonException异常？"
+  },
+  {
+    "test_name": "testLongs",
+    "test_code": "String json =\n        \"[0,0,0,\" + \"1,1,1,\" + \"-1,-1,-1,\" + \"-9223372036854775808,\" + \"9223372036854775807]\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.beginArray();\n    assertThat(reader.nextLong()).isEqualTo(0L);\n    assertThat(reader.nextInt()).isEqualTo(0);\n    assertThat(reader.nextDouble()).isEqualTo(0.0);\n    assertThat(reader.nextLong()).isEqualTo(1L);\n    assertThat(reader.nextInt()).isEqualTo(1);\n    assertThat(reader.nextDouble()).isEqualTo(1.0);\n    assertThat(reader.nextLong()).isEqualTo(-1L);\n    assertThat(reader.nextInt()).isEqualTo(-1);\n    assertThat(reader.nextDouble()).isEqualTo(-1.0);\n\n    assertThrows(NumberFormatException.class, () -> reader.nextInt());\n    assertThat(reader.nextLong()).isEqualTo(Long.MIN_VALUE);\n\n    assertThrows(NumberFormatException.class, () -> reader.nextInt());\n    assertThat(reader.nextLong()).isEqualTo(Long.MAX_VALUE);\n\n    reader.endArray();\n    assertThat(reader.peek()).isEqualTo(JsonToken.END_DOCUMENT);",
+    "methods_used": [
+      "peek",
+      "nextLong",
+      "endArray",
+      "nextInt",
+      "beginArray",
+      "nextDouble"
+    ],
+    "query": "这个测试方法主要测试了JsonReader在读取不同类型的数据时的行为，具体是如何处理整数、小数、边界值和非法输入的？"
+  },
+  {
+    "test_name": "testBooleans",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[true,false]\"));\n    reader.beginArray();\n    assertThat(reader.nextBoolean()).isTrue();\n    assertThat(reader.nextBoolean()).isFalse();\n    reader.endArray();\n    assertThat(reader.peek()).isEqualTo(JsonToken.END_DOCUMENT);",
+    "methods_used": [
+      "endArray",
+      "beginArray",
+      "peek",
+      "nextBoolean"
+    ],
+    "query": "这段测试代码主要验证了JsonReader解析布尔值数组的功能，请问它具体验证了哪些方面？"
+  },
+  {
+    "test_name": "testPeekingUnquotedStringsPrefixedWithBooleans",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[truey]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(STRING);\n\n    var e = assertThrows(IllegalStateException.class, () -> reader.nextBoolean());\n    assertUnexpectedStructureError(e, \"a boolean\", \"STRING\", \"line 1 column 2 path $[0]\");\n\n    assertThat(reader.nextString()).isEqualTo(\"truey\");\n    reader.endArray();",
+    "methods_used": [
+      "peek",
+      "nextBoolean",
+      "endArray",
+      "beginArray",
+      "setStrictness",
+      "nextString"
+    ],
+    "query": "当 JsonReader 解析 \"[truey]\" 这个不带引号的布尔值字符串时，会先返回什么类型？紧接着尝试读取下一个布尔值会抛出什么异常？正确读取下一个字符串的值应该是？"
+  },
+  {
+    "test_name": "testPeekingUnquotedStringsPrefixedWithIntegers",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[12.34e5x]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(STRING);\n\n    assertThrows(NumberFormatException.class, () -> reader.nextInt());\n    assertThat(reader.nextString()).isEqualTo(\"12.34e5x\");",
+    "methods_used": [
+      "peek",
+      "nextInt",
+      "beginArray",
+      "setStrictness",
+      "nextString"
+    ],
+    "query": "当LENIENT模式下解析包含整数前缀的未引号字符串时，peek方法返回的是STRING类型吗？"
+  },
+  {
+    "test_name": "testPeekLongMinValue",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[-9223372036854775808]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(NUMBER);\n    assertThat(reader.nextLong()).isEqualTo(-9223372036854775808L);",
+    "methods_used": [
+      "setStrictness",
+      "peek",
+      "beginArray",
+      "nextLong"
+    ],
+    "query": "这个测试方法验证了JsonReader是否能正确读取并返回最小的long值-9223372036854775808L？"
+  },
+  {
+    "test_name": "testPeekLongMaxValue",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[9223372036854775807]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(NUMBER);\n    assertThat(reader.nextLong()).isEqualTo(9223372036854775807L);",
+    "methods_used": [
+      "setStrictness",
+      "peek",
+      "beginArray",
+      "nextLong"
+    ],
+    "query": "这个测试方法测试的是JsonReader在解析包含最大long值的JSON数组时，是否能正确识别类型并返回正确的long值。"
+  },
+  {
+    "test_name": "testLongLargerThanMaxLongThatWrapsAround",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[22233720368547758070]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(NUMBER);\n    assertThrows(NumberFormatException.class, () -> reader.nextLong());",
+    "methods_used": [
+      "setStrictness",
+      "peek",
+      "beginArray",
+      "nextLong"
+    ],
+    "query": "当解析超出行程的长整型值时，LENIENT模式下是否会抛出NumberFormatException？"
+  },
+  {
+    "test_name": "testLongLargerThanMinLongThatWrapsAround",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[-22233720368547758070]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(NUMBER);\n    assertThrows(NumberFormatException.class, () -> reader.nextLong());",
+    "methods_used": [
+      "setStrictness",
+      "peek",
+      "beginArray",
+      "nextLong"
+    ],
+    "query": "该测试方法验证了在处理超出Long最小值范围且发生环绕的JSON数据时，JsonReader在宽松模式下是否能正确抛出NumberFormatException异常？"
+  },
+  {
+    "test_name": "testNegativeZero",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[-0]\"));\n    reader.setStrictness(Strictness.LEGACY_STRICT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(NUMBER);\n    assertThat(reader.nextString()).isEqualTo(\"-0\");",
+    "methods_used": [
+      "setStrictness",
+      "peek",
+      "beginArray",
+      "nextString"
+    ],
+    "query": "该测试方法验证了JsonReader解析负零时的行为，在宽松模式下,-0会被识别为什么类型，并返回具体的字符串表示是什么？"
+  },
+  {
+    "test_name": "testPeekMuchLargerThanLongMinValue",
+    "test_code": "@SuppressWarnings(\"FloatingPointLiteralPrecision\")\n    double d = -92233720368547758080d;\n    JsonReader reader = new JsonReader(reader(\"[-92233720368547758080]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(NUMBER);\n    assertThrows(NumberFormatException.class, () -> reader.nextLong());\n    assertThat(reader.nextDouble()).isEqualTo(d);",
+    "methods_used": [
+      "peek",
+      "nextLong",
+      "beginArray",
+      "setStrictness",
+      "nextDouble"
+    ],
+    "query": "测试方法testPeekMuchLargerThanLongMinValue验证了JsonReader在解析超长整数时的哪些行为？"
+  },
+  {
+    "test_name": "testQuotedNumberWithEscape",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[\\\"12\\\\u00334\\\"]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(STRING);\n    assertThat(reader.nextInt()).isEqualTo(1234);",
+    "methods_used": [
+      "setStrictness",
+      "peek",
+      "beginArray",
+      "nextInt"
+    ],
+    "query": "这个测试方法测试的是如何处理包含转义字符的quoted number（双引号括起来的数字）？具体是如何处理的？"
+  },
+  {
+    "test_name": "testMixedCaseLiterals",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[True,TruE,False,FALSE,NULL,nulL]\"));\n    reader.beginArray();\n    assertThat(reader.nextBoolean()).isTrue();\n    assertThat(reader.nextBoolean()).isTrue();\n    assertThat(reader.nextBoolean()).isFalse();\n    assertThat(reader.nextBoolean()).isFalse();\n    reader.nextNull();\n    reader.nextNull();\n    reader.endArray();\n    assertThat(reader.peek()).isEqualTo(JsonToken.END_DOCUMENT);",
+    "methods_used": [
+      "peek",
+      "endArray",
+      "beginArray",
+      "nextNull",
+      "nextBoolean"
+    ],
+    "query": "该测试方法验证了JsonReader能否正确读取混合大小写的布尔值和null值吗？"
+  },
+  {
+    "test_name": "testPrematureEndOfInput",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"{\\\"a\\\":true,\"));\n    reader.beginObject();\n    assertThat(reader.nextName()).isEqualTo(\"a\");\n    assertThat(reader.nextBoolean()).isTrue();\n    assertThrows(EOFException.class, () -> reader.nextName());",
+    "methods_used": [
+      "nextBoolean",
+      "nextName",
+      "beginObject"
+    ],
+    "query": "该测试方法验证了当JsonReader在解析对象开始后遇到文件结尾时会抛出EOFException吗？"
+  },
+  {
+    "test_name": "testIntegerMismatchFailuresDoNotAdvance",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[1.5]\"));\n    reader.beginArray();\n    assertThrows(NumberFormatException.class, () -> reader.nextInt());\n    assertThat(reader.nextDouble()).isEqualTo(1.5d);\n    reader.endArray();",
+    "methods_used": [
+      "nextDouble",
+      "endArray",
+      "beginArray",
+      "nextInt"
+    ],
+    "query": "在解析包含非整数的JSON数组时，JsonReader如何处理nextInt和nextDouble方法的调用顺序？"
+  },
+  {
+    "test_name": "testStringNullIsNotNull",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[\\\"null\\\"]\"));\n    reader.beginArray();\n    var e = assertThrows(IllegalStateException.class, () -> reader.nextNull());\n    assertUnexpectedStructureError(e, \"null\", \"STRING\", \"line 1 column 3 path $[0]\");",
+    "methods_used": [
+      "beginArray",
+      "nextNull"
+    ],
+    "query": "testStringNullIsNotNull方法测试的是什么情况会抛出IllegalStateException？"
+  },
+  {
+    "test_name": "testNullLiteralIsNotAString",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[null]\"));\n    reader.beginArray();\n    var e = assertThrows(IllegalStateException.class, () -> reader.nextString());\n    assertUnexpectedStructureError(e, \"a string\", \"NULL\", \"line 1 column 6 path $[0]\");",
+    "methods_used": [
+      "beginArray",
+      "nextString"
+    ],
+    "query": "该测试方法验证了当JsonReader解析null值时，不会抛出什么类型的异常？"
+  },
+  {
+    "test_name": "testCommentsInStringValue",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[\\\"// comment\\\"]\"));\n    reader.beginArray();\n    assertThat(reader.nextString()).isEqualTo(\"// comment\");\n    reader.endArray();\n\n    reader = new JsonReader(reader(\"{\\\"a\\\":\\\"#someComment\\\"",
+    "methods_used": [
+      "endArray",
+      "beginArray",
+      "nextString"
+    ],
+    "query": "该测试方法旨在验证JsonReader在解析包含注释的字符串时，是否能够正确忽略注释并返回有效的值？"
+  },
+  {
+    "test_name": "testStrictComments",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[// comment \\n true]\"));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.nextBoolean());\n    assertStrictError(e, \"line 1 column 3 path $[0]\");\n\n    JsonReader reader2 = new JsonReader(reader(\"[# comment \\n true]\"));\n    reader2.beginArray();\n    e = assertThrows(MalformedJsonException.class, () -> reader2.nextBoolean());\n    assertStrictError(e, \"line 1 column 3 path $[0]\");\n\n    JsonReader reader3 = new JsonReader(reader(\"[/* comment */ true]\"));\n    reader3.beginArray();\n    e = assertThrows(MalformedJsonException.class, () -> reader3.nextBoolean());\n    assertStrictError(e, \"line 1 column 3 path $[0]\");",
+    "methods_used": [
+      "beginArray",
+      "nextBoolean"
+    ],
+    "query": "该测试方法测试的是：注释会影响JsonReader解析JSON字符串吗？"
+  },
+  {
+    "test_name": "testLenientComments",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[// comment \\n true]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextBoolean()).isTrue();\n\n    reader = new JsonReader(reader(\"[# comment \\n true]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextBoolean()).isTrue();\n\n    reader = new JsonReader(reader(\"[/* comment */ true]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextBoolean()).isTrue();",
+    "methods_used": [
+      "setStrictness",
+      "beginArray",
+      "nextBoolean"
+    ],
+    "query": "该测试方法测试的是JsonReader在解析包含注释的JSON字符串时，使用LENIENT模式是否能正确解析Boolean值true？"
+  },
+  {
+    "test_name": "testStrictCommentsWithSkipValue",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[// comment \\n true]\"));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.skipValue());\n    assertStrictError(e, \"line 1 column 3 path $[0]\");\n\n    JsonReader reader2 = new JsonReader(reader(\"[# comment \\n true]\"));\n    reader2.beginArray();\n    e = assertThrows(MalformedJsonException.class, () -> reader2.skipValue());\n    assertStrictError(e, \"line 1 column 3 path $[0]\");\n\n    JsonReader reader3 = new JsonReader(reader(\"[/* comment */ true]\"));\n    reader3.beginArray();\n    e = assertThrows(MalformedJsonException.class, () -> reader3.skipValue());\n    assertStrictError(e, \"line 1 column 3 path $[0]\");",
+    "methods_used": [
+      "skipValue",
+      "beginArray"
+    ],
+    "query": "这个测试方法验证了当JsonReader解析包含注释的数组时，skipValue方法是否会抛出MalformedJsonException异常以及异常信息是否正确？"
+  },
+  {
+    "test_name": "testStrictUnquotedStrings",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[a]\"));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.nextString());\n    assertStrictError(e, \"line 1 column 2 path $[0]\");",
+    "methods_used": [
+      "beginArray",
+      "nextString"
+    ],
+    "query": "该测试方法测试的是在解析包含未转义字符的字符串时，JsonReader是否会抛出MalformedJsonException异常，并验证错误消息是否正确？具体查询问题是：测试解析包含未转义字符的字符串时，是否会抛出MalformedJsonException异常，以及错误消息是否为“line 1 column 2 path $[0]”？"
+  },
+  {
+    "test_name": "testStrictUnquotedStringsWithSkipValue",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[a]\"));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.skipValue());\n    assertStrictError(e, \"line 1 column 2 path $[0]\");",
+    "methods_used": [
+      "skipValue",
+      "beginArray"
+    ],
+    "query": "测试方法testStrictUnquotedStringsWithSkipValue验证了在解析JSON数组时，未引述的字符串会导致MalformedJsonException异常，并且异常消息应准确指出错误发生的位置。请确认这种业务逻辑的描述是否正确。"
+  },
+  {
+    "test_name": "testLenientUnquotedStrings",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[a]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextString()).isEqualTo(\"a\");",
+    "methods_used": [
+      "setStrictness",
+      "beginArray",
+      "nextString"
+    ],
+    "query": "当JsonReader设置为LENIENT模式时，开始解析一个数组并调用nextString方法，预期返回值应为\"a\"吗？"
+  },
+  {
+    "test_name": "testStrictSingleQuotedStrings",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"['a']\"));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.nextString());\n    assertStrictError(e, \"line 1 column 3 path $[0]\");",
+    "methods_used": [
+      "beginArray",
+      "nextString"
+    ],
+    "query": "该测试方法测试的是当JsonReader解析单引号括起来的字符串数组时，如果数组中的元素不是严格意义上的字符串，是否会抛出MalformedJsonException异常，并检查异常信息是否正确？"
+  },
+  {
+    "test_name": "testLenientSingleQuotedStrings",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"['a']\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextString()).isEqualTo(\"a\");",
+    "methods_used": [
+      "setStrictness",
+      "beginArray",
+      "nextString"
+    ],
+    "query": "当使用宽松模式解析单引号括起来的字符串时，JsonReader如何处理数组中的第一个元素？"
+  },
+  {
+    "test_name": "testStrictSingleQuotedStringsWithSkipValue",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"['a']\"));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.skipValue());\n    assertStrictError(e, \"line 1 column 3 path $[0]\");",
+    "methods_used": [
+      "skipValue",
+      "beginArray"
+    ],
+    "query": "测试方法`testStrictSingleQuotedStringsWithSkipValue`的目的是什么？它验证了哪些情况下的异常处理？"
+  },
+  {
+    "test_name": "testStrictSemicolonDelimitedArray",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[true;true]\"));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.nextBoolean());\n    assertStrictError(e, \"line 1 column 2 path $[0]\");",
+    "methods_used": [
+      "beginArray",
+      "nextBoolean"
+    ],
+    "query": "这个测试方法测试的是什么情况会抛出MalformedJsonException异常？"
+  },
+  {
+    "test_name": "testLenientSemicolonDelimitedArray",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[true;true]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextBoolean()).isTrue();\n    assertThat(reader.nextBoolean()).isTrue();",
+    "methods_used": [
+      "setStrictness",
+      "beginArray",
+      "nextBoolean"
+    ],
+    "query": "该测试方法验证了在LENIENT模式下，JsonReader是否能正确解析分号分隔的布尔数组 \"[true;true]\" 并逐项返回 true？"
+  },
+  {
+    "test_name": "testStrictSemicolonDelimitedArrayWithSkipValue",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[true;true]\"));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.skipValue());\n    assertStrictError(e, \"line 1 column 2 path $[0]\");",
+    "methods_used": [
+      "skipValue",
+      "beginArray"
+    ],
+    "query": "该测试方法测试的是在严格分号分隔数组中使用skipValue方法时，如果数组元素不符合预期，是否会抛出MalformedJsonException异常以及异常信息是否正确？"
+  },
+  {
+    "test_name": "testStrictUnnecessaryArraySeparators",
+    "test_code": "// The following calls `nextNull()` because a lenient JsonReader would treat redundant array\n    // separators as implicit JSON null\n\n    JsonReader reader = new JsonReader(reader(\"[true,,true]\"));\n    reader.beginArray();\n    assertThat(reader.nextBoolean()).isTrue();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.nextNull());\n    assertStrictError(e, \"line 1 column 8 path $[1]\");\n\n    JsonReader reader2 = new JsonReader(reader(\"[,true]\"));\n    reader2.beginArray();\n    e = assertThrows(MalformedJsonException.class, () -> reader2.nextNull());\n    assertStrictError(e, \"line 1 column 3 path $[0]\");\n\n    JsonReader reader3 = new JsonReader(reader(\"[true,]\"));\n    reader3.beginArray();\n    assertThat(reader3.nextBoolean()).isTrue();\n    e = assertThrows(MalformedJsonException.class, () -> reader3.nextNull());\n    assertStrictError(e, \"line 1 column 8 path $[1]\");\n\n    JsonReader reader4 = new JsonReader(reader(\"[,]\"));\n    reader4.beginArray();\n    e = assertThrows(MalformedJsonException.class, () -> reader4.nextNull());\n    assertStrictError(e, \"line 1 column 3 path $[0]\");",
+    "methods_used": [
+      "nextNull",
+      "beginArray",
+      "nextBoolean"
+    ],
+    "query": "这个测试方法测试的是什么情况会导致`JsonReader.nextNull()`抛出`MalformedJsonException`异常？"
+  },
+  {
+    "test_name": "testLenientUnnecessaryArraySeparators",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[true,,true]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextBoolean()).isTrue();\n    // Redundant array separators are treated as implicit JSON null\n    reader.nextNull();\n    assertThat(reader.nextBoolean()).isTrue();\n    reader.endArray();\n\n    reader = new JsonReader(reader(\"[,true]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    reader.nextNull();\n    assertThat(reader.nextBoolean()).isTrue();\n    reader.endArray();\n\n    reader = new JsonReader(reader(\"[true,]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextBoolean()).isTrue();\n    reader.nextNull();\n    reader.endArray();\n\n    reader = new JsonReader(reader(\"[,]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    reader.nextNull();\n    reader.nextNull();\n    reader.endArray();",
+    "methods_used": [
+      "endArray",
+      "beginArray",
+      "nextNull",
+      "setStrictness",
+      "nextBoolean"
+    ],
+    "query": "Lenient模式下，多余的数组分隔符会被如何处理？"
+  },
+  {
+    "test_name": "testStrictUnnecessaryArraySeparatorsWithSkipValue",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[true,,true]\"));\n    reader.beginArray();\n    assertThat(reader.nextBoolean()).isTrue();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.skipValue());\n    assertStrictError(e, \"line 1 column 8 path $[1]\");\n\n    JsonReader reader2 = new JsonReader(reader(\"[,true]\"));\n    reader2.beginArray();\n    e = assertThrows(MalformedJsonException.class, () -> reader2.skipValue());\n    assertStrictError(e, \"line 1 column 3 path $[0]\");\n\n    JsonReader reader3 = new JsonReader(reader(\"[true,]\"));\n    reader3.beginArray();\n    assertThat(reader3.nextBoolean()).isTrue();\n    e = assertThrows(MalformedJsonException.class, () -> reader3.skipValue());\n    assertStrictError(e, \"line 1 column 8 path $[1]\");\n\n    JsonReader reader4 = new JsonReader(reader(\"[,]\"));\n    reader4.beginArray();\n    e = assertThrows(MalformedJsonException.class, () -> reader4.skipValue());\n    assertStrictError(e, \"line 1 column 3 path $[0]\");",
+    "methods_used": [
+      "skipValue",
+      "beginArray",
+      "nextBoolean"
+    ],
+    "query": "该测试方法测试的是JsonReader在遇到不必要的数组分隔符时，调用skipValue方法是否会正确抛出MalformedJsonException异常及其错误位置是否准确？"
+  },
+  {
+    "test_name": "testStrictMultipleTopLevelValues",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[] []\"));\n    reader.beginArray();\n    reader.endArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.peek());\n    assertStrictError(e, \"line 1 column 5 path $\");",
+    "methods_used": [
+      "peek",
+      "beginArray",
+      "endArray"
+    ],
+    "query": "该测试方法验证了JsonReader在解析空数组字符串时，对于连续两个空数组字符串调用beginArray和endArray方法后的异常处理是否正确？"
+  },
+  {
+    "test_name": "testStrictMultipleTopLevelValuesWithSkipValue",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[] []\"));\n    reader.beginArray();\n    reader.endArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.skipValue());\n    assertStrictError(e, \"line 1 column 5 path $\");",
+    "methods_used": [
+      "skipValue",
+      "beginArray",
+      "endArray"
+    ],
+    "query": "这个测试方法测试的是什么场景会导致MalformedJsonException异常被抛出？"
+  },
+  {
+    "test_name": "testTopLevelValueTypeWithSkipValue",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"true\"));\n    reader.skipValue();\n    assertThat(reader.peek()).isEqualTo(JsonToken.END_DOCUMENT);",
+    "methods_used": [
+      "skipValue",
+      "peek"
+    ],
+    "query": "当reader读取到true值并调用skipValue方法后，peek方法返回的结果应该是什么？"
+  },
+  {
+    "test_name": "testBomIgnoredAsFirstCharacterOfDocument",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"\\ufeff[]\"));\n    reader.beginArray();\n    reader.endArray();",
+    "methods_used": [
+      "beginArray",
+      "endArray"
+    ],
+    "query": "当JSON文档的第一个字符是UFEBF时，JsonReader的beginArray和endArray方法能否正确处理空数组？"
+  },
+  {
+    "test_name": "testBomForbiddenAsOtherCharacterInDocument",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[\\ufeff]\"));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.endArray());\n    assertStrictError(e, \"line 1 column 2 path $[0]\");",
+    "methods_used": [
+      "beginArray",
+      "endArray"
+    ],
+    "query": "在JSON文档的开始位置存在非法字符时，JsonReader是否会抛出MalformedJsonException异常？"
+  },
+  {
+    "test_name": "testStrictVeryLongNumber",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[0.\" + repeat('9', 8192) + \"]\"));\n    reader.beginArray();\n    var e = assertThrows(MalformedJsonException.class, () -> reader.nextDouble());\n    assertStrictError(e, \"line 1 column 2 path $[0]\");",
+    "methods_used": [
+      "beginArray",
+      "nextDouble"
+    ],
+    "query": "该测试方法是验证JsonReader在读取非常长的数字字符串时是否会抛出MalformedJsonException异常，并检查异常消息是否正确？如果是，请具体描述测试的场景和预期结果。"
+  },
+  {
+    "test_name": "testLenientVeryLongNumber",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[0.\" + repeat('9', 8192) + \"]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(JsonToken.STRING);\n    assertThat(reader.nextDouble()).isEqualTo(1d);\n    reader.endArray();\n    assertThat(reader.peek()).isEqualTo(JsonToken.END_DOCUMENT);",
+    "methods_used": [
+      "peek",
+      "endArray",
+      "beginArray",
+      "setStrictness",
+      "nextDouble"
+    ],
+    "query": "lenient模式下，JsonReader如何处理非常长的开头为0的数字字符串？"
+  },
+  {
+    "test_name": "testVeryLongUnquotedLiteral",
+    "test_code": "String literal = \"a\" + repeat('b', 8192) + \"c\";\n    JsonReader reader = new JsonReader(reader(\"[\" + literal + \"]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextString()).isEqualTo(literal);\n    reader.endArray();",
+    "methods_used": [
+      "setStrictness",
+      "endArray",
+      "beginArray",
+      "nextString"
+    ],
+    "query": "这个测试方法验证了当JsonReader对象处理包含非常长未引号标识符的数组时，是否能正确解析并返回该标识符吗？"
+  },
+  {
+    "test_name": "testDeeplyNestedArrays",
+    "test_code": "// this is nested 40 levels deep; Gson is tuned for nesting is 30 levels deep or fewer\n    JsonReader reader =\n        new JsonReader(\n            reader(\n                \"[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]\"));\n    for (int i = 0; i < 40; i++) {\n      reader.beginArray();",
+    "methods_used": [
+      "beginArray"
+    ],
+    "query": "该测试方法测试的是JsonReader处理嵌套数组能力的上限是多少？"
+  },
+  {
+    "test_name": "testNestingLimitDefault",
+    "test_code": "int defaultLimit = JsonReader.DEFAULT_NESTING_LIMIT;\n    String json = repeat('[', defaultLimit + 1);\n    JsonReader reader = new JsonReader(reader(json));\n    assertThat(reader.getNestingLimit()).isEqualTo(defaultLimit);\n\n    for (int i = 0; i < defaultLimit; i++) {\n      reader.beginArray();",
+    "methods_used": [
+      "beginArray",
+      "getNestingLimit"
+    ],
+    "query": "这个测试方法测试的是JsonReader对象在默认嵌套限制下的数组开始方法是否正确返回当前嵌套限制值吗？"
+  },
+  {
+    "test_name": "testStringEndingInSlash",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"/\"));\n    reader.setStrictness(Strictness.LENIENT);\n    var e = assertThrows(MalformedJsonException.class, () -> reader.peek());\n    assertThat(e)\n        .hasMessageThat()\n        .isEqualTo(\n            \"Expected value at line 1 column 1 path $\\n\"\n                + \"See https://github.com/google/gson/blob/main/Troubleshooting.md#malformed-json\");",
+    "methods_used": [
+      "setStrictness",
+      "peek"
+    ],
+    "query": "这个测试方法测试的是什么情况会导致 `MalformedJsonException` 异常被抛出？"
+  },
+  {
+    "test_name": "testDocumentWithCommentEndingInSlash",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"/* foo *//\"));\n    reader.setStrictness(Strictness.LENIENT);\n    var e = assertThrows(MalformedJsonException.class, () -> reader.peek());\n    assertThat(e)\n        .hasMessageThat()\n        .isEqualTo(\n            \"Expected value at line 1 column 10 path $\\n\"\n                + \"See https://github.com/google/gson/blob/main/Troubleshooting.md#malformed-json\");",
+    "methods_used": [
+      "setStrictness",
+      "peek"
+    ],
+    "query": "此测试方法验证了当JsonReader解析以单行注释结尾的JSON字符串时，是否会抛出MalformedJsonException异常？"
+  },
+  {
+    "test_name": "testStringWithLeadingSlash",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"/x\"));\n    reader.setStrictness(Strictness.LENIENT);\n    var e = assertThrows(MalformedJsonException.class, () -> reader.peek());\n    assertThat(e)\n        .hasMessageThat()\n        .isEqualTo(\n            \"Expected value at line 1 column 1 path $\\n\"\n                + \"See https://github.com/google/gson/blob/main/Troubleshooting.md#malformed-json\");",
+    "methods_used": [
+      "setStrictness",
+      "peek"
+    ],
+    "query": "当JsonReader读取以斜杠开头的字符串时，应该如何处理并抛出异常？"
+  },
+  {
+    "test_name": "testUnterminatedObject",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"{\\\"a\\\":\\\"android\\\"x\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginObject();\n    assertThat(reader.nextName()).isEqualTo(\"a\");\n    assertThat(reader.nextString()).isEqualTo(\"android\");\n    var e = assertThrows(MalformedJsonException.class, () -> reader.peek());\n    assertThat(e)\n        .hasMessageThat()\n        .isEqualTo(\n            \"Unterminated object at line 1 column 16 path $.a\\n\"\n                + \"See https://github.com/google/gson/blob/main/Troubleshooting.md#malformed-json\");",
+    "methods_used": [
+      "peek",
+      "beginObject",
+      "nextName",
+      "setStrictness",
+      "nextString"
+    ],
+    "query": "该测试方法测试的是当JsonReader以Lenient模式开始一个对象，解析完键\"a\"和值\"android\"后，尝试解析未闭合的对象时，是否会抛出MalformedJsonException异常？"
+  },
+  {
+    "test_name": "testVeryLongQuotedString",
+    "test_code": "char[] stringChars = new char[1024 * 16];\n    Arrays.fill(stringChars, 'x');\n    String string = new String(stringChars);\n    String json = \"[\\\"\" + string + \"\\\"]\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.beginArray();\n    assertThat(reader.nextString()).isEqualTo(string);\n    reader.endArray();",
+    "methods_used": [
+      "endArray",
+      "beginArray",
+      "nextString"
+    ],
+    "query": "这个测试方法测试的是JsonReader在处理非常长的引ож字符串时，是否能够正确读取和解析字符串内容？"
+  },
+  {
+    "test_name": "testVeryLongUnquotedString",
+    "test_code": "char[] stringChars = new char[1024 * 16];\n    Arrays.fill(stringChars, 'x');\n    String string = new String(stringChars);\n    String json = \"[\" + string + \"]\";\n    JsonReader reader = new JsonReader(reader(json));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextString()).isEqualTo(string);\n    reader.endArray();",
+    "methods_used": [
+      "setStrictness",
+      "endArray",
+      "beginArray",
+      "nextString"
+    ],
+    "query": "该测试方法验证的是在JSON解析器设置为宽容模式时，是否能够正确解析一个非常长的未引号字符串。"
+  },
+  {
+    "test_name": "testVeryLongUnterminatedString",
+    "test_code": "char[] stringChars = new char[1024 * 16];\n    Arrays.fill(stringChars, 'x');\n    String string = new String(stringChars);\n    String json = \"[\" + string;\n    JsonReader reader = new JsonReader(reader(json));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.nextString()).isEqualTo(string);\n    assertThrows(EOFException.class, () -> reader.peek());",
+    "methods_used": [
+      "setStrictness",
+      "peek",
+      "beginArray",
+      "nextString"
+    ],
+    "query": "如何验证一个未终止的字符串在Lenient模式下的JsonReader行为？"
+  },
+  {
+    "test_name": "testSkipVeryLongUnquotedString",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[\" + repeat('x', 8192) + \"]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    reader.skipValue();\n    reader.endArray();",
+    "methods_used": [
+      "setStrictness",
+      "skipValue",
+      "beginArray",
+      "endArray"
+    ],
+    "query": "这个测试方法测试的是当`JsonReader`解析一个非常长的未引号字符串时，在忽略严格模式的情况下是否能够正确跳过这个字符串并正确解析JSON数组？"
+  },
+  {
+    "test_name": "testSkipTopLevelUnquotedString",
+    "test_code": "JsonReader reader = new JsonReader(reader(repeat('x', 8192)));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.skipValue();\n    assertThat(reader.peek()).isEqualTo(JsonToken.END_DOCUMENT);",
+    "methods_used": [
+      "setStrictness",
+      "skipValue",
+      "peek"
+    ],
+    "query": ".Lenient模式下，JsonReader跳过顶级未引号字符串后，应该解析到什么Token？"
+  },
+  {
+    "test_name": "testSkipVeryLongQuotedString",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[\\\"\" + repeat('x', 8192) + \"\\\"]\"));\n    reader.beginArray();\n    reader.skipValue();\n    reader.endArray();",
+    "methods_used": [
+      "skipValue",
+      "beginArray",
+      "endArray"
+    ],
+    "query": "这个测试方法测试的是JsonReader在处理非常长的引号字符串时skipValue方法是否能正确跳过字符串内容？"
+  },
+  {
+    "test_name": "testSkipTopLevelQuotedString",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"\\\"\" + repeat('x', 8192) + \"\\\"\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.skipValue();\n    assertThat(reader.peek()).isEqualTo(JsonToken.END_DOCUMENT);",
+    "methods_used": [
+      "setStrictness",
+      "skipValue",
+      "peek"
+    ],
+    "query": "测试方法`testSkipTopLevelQuotedString`是为了验证什么业务逻辑？"
+  },
+  {
+    "test_name": "testStringAsNumberWithTruncatedExponent",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[123e]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(STRING);",
+    "methods_used": [
+      "setStrictness",
+      "peek",
+      "beginArray"
+    ],
+    "query": "该测试方法测试的是当JsonReader以lenient模式读取包含截断指数的字符串时，beginArray方法是否能正确开始数组解析并且peek方法返回STRING类型？"
+  },
+  {
+    "test_name": "testStringAsNumberWithDigitAndNonDigitExponent",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[123e4b]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(STRING);",
+    "methods_used": [
+      "setStrictness",
+      "peek",
+      "beginArray"
+    ],
+    "query": "该测试方法验证了JsonReader在解析包含数字和字母指数的字符串时，是否能够在宽松模式下正确识别类型？"
+  },
+  {
+    "test_name": "testStringAsNumberWithNonDigitExponent",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[123eb]\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(STRING);",
+    "methods_used": [
+      "setStrictness",
+      "peek",
+      "beginArray"
+    ],
+    "query": "该测试方法验证了当JsonReader以\"[123eb]\"作为输入，且严格模式设置为宽松时，开始解析数组后，.peek()方法是否返回STRING类型？"
+  },
+  {
+    "test_name": "testUnterminatedStringFailure",
+    "test_code": "JsonReader reader = new JsonReader(reader(\"[\\\"string\"));\n    reader.setStrictness(Strictness.LENIENT);\n    reader.beginArray();\n    assertThat(reader.peek()).isEqualTo(JsonToken.STRING);\n    var e = assertThrows(MalformedJsonException.class, () -> reader.nextString());\n    assertThat(e)\n        .hasMessageThat()\n        .isEqualTo(\n            \"Unterminated string at line 1 column 9 path $[0]\\n\"\n                + \"See https://github.com/google/gson/blob/main/Troubleshooting.md#malformed-json\");",
+    "methods_used": [
+      "setStrictness",
+      "peek",
+      "beginArray",
+      "nextString"
+    ],
+    "query": "JsonReader在解析未结束的字符串时会抛出什么样的异常？"
+  }
+]

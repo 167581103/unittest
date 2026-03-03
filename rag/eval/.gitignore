@@ -1,0 +1,7 @@
+data
+*.pyc
+*.index
+lib/
+*.exec
+*.html
+.env
