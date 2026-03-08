@@ -22,13 +22,8 @@ RAG模块 - 代码检索（传统RAG + Agentic RAG）
     context = await agentic_rag.retrieve_by_agent(target_method, target_class="MyClass")
 """
 
-from rag.code_rag import (
-    CodeRAG,
-    AgenticRAG,
-    build_code_index,
-    retrieve_context,
-    retrieve_context_agentic
-)
+from rag.code_rag import CodeRAG, build_code_index, retrieve_context
+from rag.agentic_rag import AgenticRAG, retrieve_context_agentic
 
 __all__ = [
     "CodeRAG",

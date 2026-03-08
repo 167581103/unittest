@@ -1,5 +1,5 @@
 """
-LLM模块 - 极简代码生成
+LLM模块
 
 功能：
 1. 嵌入：获取文本嵌入向量
@@ -9,7 +9,7 @@ LLM模块 - 极简代码生成
 使用示例：
     import asyncio
     from llm import generate_test, embed_single
-    
+
     # 生成测试
     async def main():
         result = await generate_test(
@@ -20,7 +20,7 @@ LLM模块 - 极简代码生成
             context=""  # 可选：检索到的上下文
         )
         print(result)
-    
+
     asyncio.run(main())
 """
 
@@ -28,13 +28,10 @@ from llm.llm import (
     # 嵌入
     embed,
     embed_single,
-    
     # 聊天
     chat,
-    
     # 提示词构建
     build_test_prompt,
-    
     # 代码生成
     generate_test,
     batch_generate,
@@ -42,8 +39,11 @@ from llm.llm import (
 )
 
 __all__ = [
-    "embed", "embed_single",
+    "embed",
+    "embed_single",
     "chat",
     "build_test_prompt",
-    "generate_test", "batch_generate", "generate",
+    "generate_test",
+    "batch_generate",
+    "generate",
 ]
