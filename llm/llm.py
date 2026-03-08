@@ -22,14 +22,16 @@ except ImportError:
 
 # ============ 配置 ============
 
+
 def _load_config():
     """加载环境变量配置"""
     try:
         from dotenv import load_dotenv
+
         load_dotenv()
     except:
         pass
-    
+
     return {
         "model": os.getenv("CHAT_MODEL", "gpt-3.5-turbo"),
         "api_key": os.getenv("API_KEY"),
@@ -45,13 +47,14 @@ CONFIG = _load_config()
 
 # ============ 嵌入 ============
 
+
 def embed(texts: List[str]) -> List[List[float]]:
     """
     获取文本嵌入向量
-    
+
     Args:
         texts: 文本列表
-        
+
     Returns:
         嵌入向量列表
     """
@@ -62,7 +65,7 @@ def embed(texts: List[str]) -> List[List[float]]:
     }
     if CONFIG["embedding_base_url"]:
         params["api_base"] = CONFIG["embedding_base_url"]
-    
+
     response = embedding(**params)
     return [d["embedding"] for d in response["data"]]
 
@@ -74,15 +77,16 @@ def embed_single(text: str) -> List[float]:
 
 # ============ 聊天 ============
 
+
 async def chat(prompt: str, system: str = None, **kwargs) -> str:
     """
     与LLM对话
-    
+
     Args:
         prompt: 用户提示词
         system: 系统提示词
         **kwargs: 额外参数（temperature, max_tokens等）
-        
+
     Returns:
         LLM生成的文本
     """
@@ -90,16 +94,16 @@ async def chat(prompt: str, system: str = None, **kwargs) -> str:
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-    
+
     params = {
         "model": CONFIG["model"],
         "messages": messages,
         "api_key": CONFIG["api_key"],
-        **kwargs
+        **kwargs,
     }
     if CONFIG["base_url"]:
         params["base_url"] = CONFIG["base_url"]
-    
+
     response = await acompletion(**params)
     return response.choices[0].message.content
 
@@ -148,20 +152,17 @@ UNIT_TEST_USER_PROMPT = """请为以下Java方法生成单元测试：
 
 
 def build_test_prompt(
-    class_name: str,
-    method_signature: str,
-    method_code: str,
-    context: str = ""
+    class_name: str, method_signature: str, method_code: str, context: str = ""
 ) -> tuple[str, str]:
     """
     构建单元测试生成提示词
-    
+
     Args:
         class_name: 类名
         method_signature: 方法签名
         method_code: 方法完整代码
         context: 检索到的相关上下文
-        
+
     Returns:
         (system_prompt, user_prompt)
     """
@@ -169,12 +170,13 @@ def build_test_prompt(
     user = UNIT_TEST_USER_PROMPT.format(
         class_name=class_name,
         method_signature=method_signature,
-        method_code=method_code
+        method_code=method_code,
     )
     return system, user
 
 
 # ============ 代码生成 ============
+
 
 def _extract_code(text: str) -> str:
     """从LLM响应中提取代码块"""
@@ -193,11 +195,11 @@ async def generate_test(
     output_path: str,
     context: str = "",
     temperature: float = 0.7,
-    max_tokens: int = 2000
+    max_tokens: int = 2000,
 ) -> Dict[str, any]:
     """
     生成单元测试并写入文件
-    
+
     Args:
         class_name: 类名
         method_signature: 方法签名
@@ -206,96 +208,91 @@ async def generate_test(
         context: 相关上下文
         temperature: 温度参数
         max_tokens: 最大token数
-        
+
     Returns:
         {"success": bool, "output_path": str, "error": str}
     """
     try:
         # 1. 构建提示词
-        system, prompt = build_test_prompt(class_name, method_signature, method_code, context)
-        
+        system, prompt = build_test_prompt(
+            class_name, method_signature, method_code, context
+        )
+
         # 2. 调用LLM
         response = await chat(
-            prompt=prompt,
-            system=system,
-            temperature=temperature,
-            max_tokens=max_tokens
+            prompt=prompt, system=system, temperature=temperature, max_tokens=max_tokens
         )
-        
+
         # 3. 提取代码
         code = _extract_code(response)
-        
+
         # 4. 写入文件
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             f.write(code)
-        
+
         return {"success": True, "output_path": output_path, "error": ""}
-        
+
     except Exception as e:
         return {"success": False, "output_path": "", "error": str(e)}
 
 
-async def batch_generate(
-    tasks: List[Dict],
-    max_concurrent: int = 3
-) -> List[Dict]:
+async def batch_generate(tasks: List[Dict], max_concurrent: int = 3) -> List[Dict]:
     """
     批量生成单元测试
-    
+
     Args:
         tasks: 任务列表，每个任务是generate_test的参数字典
         max_concurrent: 最大并发数
-        
+
     Returns:
         结果列表
     """
     semaphore = asyncio.Semaphore(max_concurrent)
-    
+
     async def run_task(task):
         async with semaphore:
             return await generate_test(**task)
-    
+
     results = await asyncio.gather(*[run_task(t) for t in tasks])
     return results
 
 
 # ============ 便捷函数 ============
 
+
 async def generate(
-    prompt: str,
-    system: str = None,
-    output_path: str = None,
-    extract_code: bool = True
+    prompt: str, system: str = None, output_path: str = None, extract_code: bool = True
 ) -> str:
     """
     通用生成函数
-    
+
     Args:
         prompt: 提示词
         system: 系统提示词
         output_path: 输出文件路径（可选）
         extract_code: 是否提取代码块
-        
+
     Returns:
         生成的文本
     """
     response = await chat(prompt=prompt, system=system)
-    
+
     if extract_code:
         response = _extract_code(response)
-    
+
     if output_path:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             f.write(response)
-    
+
     return response
 
 
 # ============ 测试 ============
 
 if __name__ == "__main__":
+
     async def demo():
         # 测试嵌入
         print("=" * 50)
@@ -306,7 +303,7 @@ if __name__ == "__main__":
             print(f"✓ 嵌入维度: {len(emb)}")
         except Exception as e:
             print(f"✗ 嵌入失败: {e}")
-        
+
         # 测试聊天
         print("\n" + "=" * 50)
         print("测试聊天")
@@ -316,7 +313,7 @@ if __name__ == "__main__":
             print(f"✓ 响应: {response[:100]}...")
         except Exception as e:
             print(f"✗ 聊天失败: {e}")
-        
+
         # 测试代码生成
         print("\n" + "=" * 50)
         print("测试代码生成")
@@ -327,7 +324,7 @@ if __name__ == "__main__":
                 method_signature="public int add(int a, int b)",
                 method_code="public int add(int a, int b) { return a + b; }",
                 output_path="/tmp/Test.java",
-                context=""
+                context="",
             )
             if result["success"]:
                 print(f"✓ 代码生成成功: {result['output_path']}")
@@ -335,5 +332,5 @@ if __name__ == "__main__":
                 print(f"✗ 代码生成失败: {result['error']}")
         except Exception as e:
             print(f"✗ 代码生成失败: {e}")
-    
+
     asyncio.run(demo())
