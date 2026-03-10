@@ -415,12 +415,12 @@ class AgenticRAG:
             context_parts.append("\n## 语义相似的代码（参考）\n")
             semantic_results = self.rag.search(method_code, top_k=min(top_k, 3))
 
-            for i, r in enumerate(semantic_results[:2], 1):
+            for i, (block, distance) in enumerate(semantic_results[:2], 1):
                 # 避免重复已检索的内容
-                signature = r["signature"]
+                signature = block.signature
                 if not any(dep in signature for dep in dependencies["needed_methods"]):
                     context_parts.append(f"\n### 参考代码 {i}: {signature}\n")
-                    context_parts.append(f"```java\n{r['code'][:400]}\n```\n")
+                    context_parts.append(f"```java\n{block.code[:400]}\n```\n")
 
         print("[√] Agentic检索完成\n")
         return "\n".join(context_parts)

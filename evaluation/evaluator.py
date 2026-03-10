@@ -141,6 +141,9 @@ class TestEvaluator:
     def _copy_test_file(self, test_file: str, test_class: str) -> bool:
         """复制测试文件到项目测试目录"""
         try:
+            # 清理旧的生成文件，避免编译冲突
+            self._cleanup_old_generated_tests()
+            
             # 使用唯一的类名（添加Generated后缀和时间戳避免冲突）
             import time
             timestamp = int(time.time())
@@ -176,8 +179,18 @@ class TestEvaluator:
             with open(test_file, 'r', encoding='utf-8') as src:
                 content = src.read()
             
-            # 替换类名
-            content = content.replace(f"public class {original_class_name}", 
+            # 提取实际的测试类名（从生成的文件中）
+            actual_class_pattern = r'public\s+class\s+(\w+)'
+            match = re.search(actual_class_pattern, content)
+            if match:
+                actual_class_name = match.group(1)
+                print(f"  ✓ 检测到实际类名: {actual_class_name}")
+            else:
+                actual_class_name = original_class_name
+                print(f"  ! 未检测到类名，使用预期类名: {original_class_name}")
+            
+            # 替换类名（使用实际提取的类名）
+            content = content.replace(f"public class {actual_class_name}", 
                                      f"public class {unique_class_name}")
             
             # 确保package声明正确（只在有包名时添加）
@@ -196,6 +209,35 @@ class TestEvaluator:
         except Exception as e:
             print(f"  ✗ 复制失败: {e}")
             return False
+    
+    def _cleanup_old_generated_tests(self):
+        """清理旧的生成测试文件，避免编译冲突"""
+        try:
+            import glob
+            # 检测是否是多模块项目
+            gson_module_path = os.path.join(self.project_dir, "gson")
+            if os.path.exists(gson_module_path):
+                # 多模块项目
+                test_dirs = [
+                    os.path.join(gson_module_path, "src/test/java"),
+                    os.path.join(self.project_dir, "src/test/java")
+                ]
+            else:
+                # 单模块项目
+                test_dirs = [os.path.join(self.project_dir, "src/test/java")]
+            
+            for test_dir in test_dirs:
+                if os.path.exists(test_dir):
+                    # 查找并删除所有 *Generated*.java 文件
+                    pattern = os.path.join(test_dir, "**", "*Generated*.java")
+                    old_files = glob.glob(pattern, recursive=True)
+                    for old_file in old_files:
+                        try:
+                            os.remove(old_file)
+                        except:
+                            pass  # 忽略删除失败
+        except Exception as e:
+            print(f"  ! 清理旧文件失败（继续）: {e}")
     
     def _compile_test(self, test_class: str) -> bool:
         """编译测试文件"""
