@@ -20,23 +20,11 @@ class AgenticRAG:
 
     async def analyze_dependencies(self, code: str, cls: str) -> Dict[str, List[str]]:
         """LLM分析代码依赖"""
-        from llm import chat
+        from llm import chat, PROMPTS
 
-        prompt = f"""分析Java方法的测试依赖。返回JSON格式。
-
-类: {cls}
-代码:
-```java
-{code}
-```
-
-返回:
-{{"methods": ["方法名"], "fields": ["字段名"], "types": ["类型名"]}}
-
-要求：不包含Java标准库类型，只返回真正需要的依赖。"""
-
+        prompt = PROMPTS["deps_analysis"].format(cls=cls, code=code)
         try:
-            resp = await chat(prompt=prompt, temperature=0.1)
+            resp = await chat(prompt, temperature=0.1)
             match = re.search(r'\{[^{}]*\}', resp, re.DOTALL)
             return json.loads(match.group()) if match else {"methods": [], "fields": [], "types": []}
         except:
