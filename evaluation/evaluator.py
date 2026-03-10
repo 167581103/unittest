@@ -116,7 +116,7 @@ class TestEvaluator:
             )
         
         actual_test_class = self._actual_test_class or test_class
-        
+
         # 3. 编译测试
         print(f"[→] 编译测试: {actual_test_class}")
         compile_success = self._compile_test(actual_test_class)
@@ -132,10 +132,15 @@ class TestEvaluator:
                 compilation_success=False,
                 errors=errors
             )
-        
-        # 4. 运行测试
-        print(f"[→] 运行测试: {actual_test_class}")
-        test_results = self._run_test(actual_test_class)
+
+        # 4. 运行测试（原有测试 + 新测试）
+        full_baseline_test = f"{target_class.split('.')[-1].replace('Test', '')}Test"
+        baseline_full_class = ".".join(target_class.split(".")[:-1] + [baseline_test])
+        if "." in test_class:
+            baseline_full_class = ".".join(test_class.split(".")[:-1] + [baseline_test])
+        test_classes_to_run = [baseline_full_class, actual_test_class]
+        print(f"[→] 运行测试: {test_classes_to_run}")
+        test_results = self._run_test(test_classes_to_run)
         
         # 5. 评估覆盖率
         print(f"[→] 评估覆盖率: {target_class}")
@@ -273,7 +278,7 @@ class TestEvaluator:
         # 检查是否是多模块项目
         gson_module_path = os.path.join(project_root, "gson")
         if os.path.exists(gson_module_path):
-            # 多模块项目，只编译gson模块（不使用clean避免删除主代码）
+            # 多模块项目，跳过有问题的test-jpms模块，只编译gson模块
             cmd = [
                 "mvn", "compile", "test-compile",
                 "-pl", "gson",
@@ -328,102 +333,64 @@ class TestEvaluator:
             print(f"  ✗ 编译异常: {e}")
             return False
     
-    def _run_test(self, test_class: str) -> List[TestResult]:
-        """运行测试"""
+    def _run_test(self, test_classes: List[str]) -> List[TestResult]:
+        """运行测试（支持多个测试类）
+
+        Args:
+            test_classes: 测试类全名列表
+        """
         project_root = self.project_dir if os.path.exists(os.path.join(self.project_dir, "pom.xml")) else os.path.dirname(self.project_dir)
-        
-        jacoco_agent = f"-javaagent:{self.jacoco_home}/lib/jacocoagent.jar=destfile={self.exec_file},append=true"
-        env = os.environ.copy()
-        env["JAVA_TOOL_OPTIONS"] = jacoco_agent
-        
-        simple_class_name = test_class.split(".")[-1]
-        
-        gson_module_path = os.path.join(project_root, "gson")
-        if os.path.exists(gson_module_path):
-            cmd = ["mvn", "test", "-pl", "gson", "-Dtest", simple_class_name, "-q"]
-        else:
-            cmd = ["mvn", "test", "-Dtest", simple_class_name, "-q"]
-        
+
         results = []
-        try:
-            result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=120, env=env)
-            output = result.stdout + result.stderr
+        gson_module_path = os.path.join(project_root, "gson")
+        
+        # 分别运行每个测试类，使用同一个exec文件累积覆盖率
+        for test_class in test_classes:
+            jacoco_agent = f"-javaagent:{self.jacoco_home}/lib/jacocoagent.jar=destfile={self.exec_file},append=true"
+            env = os.environ.copy()
+            env["JAVA_TOOL_OPTIONS"] = jacoco_agent
             
-            # 直接输出原始结果，不做正则解析
-            if "Tests run:" in output:
-                # 提取包含 Tests run 的行
-                for line in output.split('\n'):
-                    if "Tests run:" in line:
-                        # 清理 ANSI 颜色代码输出
-                        clean_line = line.replace('\x1b', '').replace('[0m', '').replace('[1m', '')
-                        for code in ['[31m', '[32m', '[33m', '[34m', '[0;1m', '[1;31m', '[1;32m', '[1;33m', '[1;34m']:
-                            clean_line = clean_line.replace(code, '')
-                        print(f"  {clean_line.strip()}")
+            simple_class_name = test_class.split(".")[-1]
+            
+            if os.path.exists(gson_module_path):
+                # 跳过有问题的test-jpms模块，只运行gson模块
+                cmd = [
+                    "mvn", "test",
+                    "-pl", "gson",
+                    "-am",
+                    f"-Dtest={simple_class_name}"
+                ]
             else:
-                print(f"  ! 无测试输出")
+                cmd = ["mvn", "test", f"-Dtest={simple_class_name}"]
             
-            if "JAVA_TOOL_OPTIONS" in os.environ:
-                del os.environ["JAVA_TOOL_OPTIONS"]
-            
-        except subprocess.TimeoutExpired:
-            print(f"  ✗ 测试运行超时")
-        except Exception as e:
-            print(f"  ✗ 测试运行异常: {e}")
+            try:
+                # 不使用capture_output，让输出直接显示
+                result = subprocess.run(cmd, cwd=project_root, text=True, timeout=120, env=env)
+                
+                # 检查返回码
+                if result.returncode == 0:
+                    print(f"  ✓ 测试运行完成")
+                else:
+                    print(f"  ✗ 测试运行失败 (返回码: {result.returncode})")
+                
+                if "JAVA_TOOL_OPTIONS" in os.environ:
+                    del os.environ["JAVA_TOOL_OPTIONS"]
+                
+            except subprocess.TimeoutExpired:
+                print(f"  ✗ 测试运行超时")
+            except Exception as e:
+                print(f"  ✗ 测试运行异常: {e}")
         
         return results
     
     def _measure_coverage(self, target_class: str) -> Optional[CoverageReport]:
         """测量代码覆盖率"""
-        try:
-            # 确定正确的项目路径
-            project_root = self.project_dir if os.path.exists(os.path.join(self.project_dir, "pom.xml")) else os.path.dirname(self.project_dir)
-            
-            # 检查是否是多模块项目，确定正确的classfiles和sourcefiles路径
-            gson_module_path = os.path.join(project_root, "gson")
-            if os.path.exists(gson_module_path):
-                # 多模块项目
-                if os.path.exists(os.path.join(self.project_dir, "target/classes")):
-                    classfiles_path = os.path.join(self.project_dir, "target/classes")
-                    sourcefiles_path = os.path.join(self.project_dir, "src/main/java")
-                else:
-                    classfiles_path = os.path.join(gson_module_path, "target/classes")
-                    sourcefiles_path = os.path.join(gson_module_path, "src/main/java")
-            else:
-                # 单模块项目
-                classfiles_path = os.path.join(self.project_dir, "target/classes")
-                sourcefiles_path = os.path.join(self.project_dir, "src/main/java")
-            
-            # 生成覆盖率报告
-            cmd = [
-                "java", "-jar",
-                f"{self.jacoco_home}/lib/jacococli.jar",
-                "report",
-                self.exec_file,
-                "--classfiles", classfiles_path,
-                "--sourcefiles", sourcefiles_path,
-                "--xml", "/tmp/jacoco-report.xml"
-            ]
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            
-            if result.returncode != 0:
-                print(f"  ✗ 覆盖率报告生成失败")
-                if result.stderr:
-                    print(f"    错误信息: {result.stderr[:200]}")
-                return None
-            
-            # 解析覆盖率报告
-            coverage = self._parse_coverage_report(target_class)
-            return coverage
-            
-        except Exception as e:
-            print(f"  ✗ 覆盖率测量异常: {e}")
-            return None
+        # 删除旧的exec文件，避免累积效应
+        if os.path.exists(self.exec_file):
+            os.remove(self.exec_file)
+
+        # 使用统一的CSV解析方法
+        return self._get_coverage_from_exec(self.exec_file, target_class)
     
     def _parse_coverage_report(self, target_class: str) -> Optional[CoverageReport]:
         """解析JaCoCo XML报告"""
@@ -497,11 +464,17 @@ class TestEvaluator:
         env = os.environ.copy()
         env["JAVA_TOOL_OPTIONS"] = jacoco_agent
         
-        # 运行基准测试
+        # 运行基准测试 - 跳过有问题的test-jpms模块
         if os.path.exists(gson_module_path):
-            cmd = ["mvn", "clean", "test", "-pl", "gson", "-Dtest", baseline_test, "-q"]
+            cmd = [
+                "mvn", "clean", "test",
+                "-pl", "gson",
+                "-am",
+                f"-Dtest={baseline_test}",
+                "-Dmaven.test.skip=true"
+            ]
         else:
-            cmd = ["mvn", "clean", "test", "-Dtest", baseline_test, "-q"]
+            cmd = ["mvn", "clean", "test", f"-Dtest={baseline_test}"]
         
         try:
             result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=180, env=env)

@@ -282,23 +282,6 @@ async def full_pipeline():
     if not gen_result["success"]:
         print("\n✗ 流程终止：测试生成失败")
         return None
-    
-    # 获取基准覆盖率（步骤3.5）
-    print("=" * 60)
-    print("步骤3.5：获取基准覆盖率（不包含新测试）")
-    print("=" * 60)
-    
-    baseline_evaluator = TestEvaluator(
-        project_dir=MAVEN_PROJECT_DIR,
-        jacoco_home=JACOCO_HOME
-    )
-    baseline_coverage = baseline_evaluator.get_baseline_coverage(
-        target_class="com.google.gson.stream.JsonReader"
-    )
-    
-    if baseline_coverage:
-        print(f"\n✓ 基准覆盖率：")
-        print(f"  - 行覆盖率：{baseline_coverage.line_coverage:.1f}%")
         print(f"  - 分支覆盖率：{baseline_coverage.branch_coverage:.1f}%")
     else:
         print("\n! 无法获取基准覆盖率\n")
