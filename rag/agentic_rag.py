@@ -47,7 +47,50 @@ class AgenticRAG:
                 return info
         return None
 
-    async def retrieve(self, code: str, cls: str = None, top_k: int = 3, target_class: str = None) -> str:
+    def _extract_method_return_types(self, code: str, cls: str) -> List[str]:
+        """从代码中提取调用的方法的返回值类型"""
+        # 提取代码中调用的方法名
+        called_methods = re.findall(r'\.(\w+)\s*\(', code)
+        return_types = set()
+        
+        for method_name in called_methods:
+            method, owner = self._find_method(method_name, cls)
+            if method and method.get("signature"):
+                # 从签名中提取返回值类型
+                sig = method["signature"]
+                # 简单解析：返回类型是签名中方法名前面的部分
+                parts = sig.split(method_name)[0].strip().split()
+                if parts:
+                    ret_type = parts[-1]  # 返回类型
+                    # 过滤掉基本类型和java.lang
+                    if ret_type and ret_type not in ['void', 'int', 'long', 'boolean', 'String', 'double', 'float', 'char', 'byte', 'short']:
+                        return_types.add(ret_type)
+        
+        return list(return_types)
+    
+    def _extract_param_types(self, method_signature: str) -> List[str]:
+        """从方法签名中提取参数类型"""
+        if '(' not in method_signature:
+            return []
+        # 提取参数部分
+        params_part = method_signature.split('(')[1].split(')')[0]
+        if not params_part.strip():
+            return []
+        
+        param_types = []
+        for param in params_part.split(','):
+            param = param.strip()
+            if param:
+                # 参数类型是最后一个词前面的部分
+                parts = param.split()
+                if parts:
+                    ptype = parts[-2] if len(parts) > 1 else parts[0]
+                    # 过滤基本类型
+                    if ptype not in ['int', 'long', 'boolean', 'String', 'double', 'float', 'char', 'byte', 'short', 'void']:
+                        param_types.append(ptype)
+        return param_types
+
+    async def retrieve(self, code: str, cls: str = None, top_k: int = 3, target_class: str = None, method_signature: str = None) -> str:
         """检索上下文"""
         # 兼容两种参数名
         cls = cls or target_class
@@ -76,6 +119,11 @@ class AgenticRAG:
             if info.constructors:
                 parts.append("\n### Constructors\n" + "\n".join(f"- {c['signature']}" for c in info.constructors[:3]))
 
+        # 2.5 提取方法返回值类型和参数类型（关键！）
+        return_types = self._extract_method_return_types(code, cls)
+        param_types = self._extract_param_types(method_signature) if method_signature else []
+        all_types = list(set(return_types + param_types + deps.get("types", [])))
+        
         # 3. 依赖方法
         for name in deps.get("methods", [])[:6]:
             method, owner = self._find_method(name, cls)
@@ -85,13 +133,16 @@ class AgenticRAG:
                 if owner == cls and method.get("code"):
                     parts.append(f"```java\n{method['code'][:500]}\n```")
 
-        # 4. 依赖类型
-        for name in deps.get("types", [])[:4]:
+        # 4. 依赖类型（包含返回值类型和参数类型）
+        for name in all_types[:6]:
             type_info = self._find_type(name)
             if type_info:
                 parts.append(f"\n### {type_info.package}.{type_info.name}")
+                # 显示完整的类型定义（enum常量等）
                 if type_info.constants:
-                    parts.append("Constants: " + ", ".join(c['signature'] for c in type_info.constants[:10]))
+                    parts.append("Constants:\n" + "\n".join(f"  - {type_info.name}.{c.get('name', c.get('signature', ''))}" for c in type_info.constants[:15]))
+                if type_info.methods:
+                    parts.append("Methods: " + ", ".join(m.get("signature", "").split()[0] for m in type_info.methods[:5]))
 
         # 5. 语义搜索补充
         for block, _ in self.rag.search(code, top_k=top_k)[:2]:

@@ -9,7 +9,6 @@
 """
 
 import os
-import re
 import json
 import subprocess
 from pathlib import Path
@@ -46,8 +45,14 @@ class EvaluationReport:
     target_method: str
     test_results: List[TestResult]
     coverage: Optional[CoverageReport]
-    compilation_success: bool
-    errors: List[str]
+    baseline_coverage: Optional[CoverageReport] = None
+    coverage_change: Optional[Dict] = None
+    compilation_success: bool = True
+    errors: List[str] = None
+    
+    def __post_init__(self):
+        if self.errors is None:
+            self.errors = []
 
 
 class TestEvaluator:
@@ -71,7 +76,8 @@ class TestEvaluator:
         test_file: str,
         test_class: str,
         target_class: str,
-        target_method: str
+        target_method: str,
+        baseline_test: str = None
     ) -> EvaluationReport:
         """
         评估生成的测试
@@ -81,14 +87,20 @@ class TestEvaluator:
             test_class: 测试类全名（如 com.google.gson.stream.JsonReaderTest）
             target_class: 被测试的目标类
             target_method: 被测试的目标方法
-            
-        Returns:
-            评估报告
+            baseline_test: 用于获取基准覆盖率的测试类名（默认从target_class推导）
         """
         errors = []
         
-        # 1. 复制测试文件到项目
-        print(f"[→] 复制测试文件: {test_file}")
+        # 推导基准测试类名
+        if baseline_test is None:
+            class_name = target_class.split(".")[-1]
+            baseline_test = f"{class_name}Test"
+        
+        # 1. 获取基准覆盖率
+        baseline_coverage = self.get_baseline_coverage(target_class, baseline_test)
+        
+        # 2. 复制测试文件到项目
+        print(f"\n[→] 复制测试文件: {test_file}")
         copy_success = self._copy_test_file(test_file, test_class)
         if not copy_success:
             errors.append("复制测试文件失败")
@@ -98,14 +110,14 @@ class TestEvaluator:
                 target_method=target_method,
                 test_results=[],
                 coverage=None,
+                baseline_coverage=baseline_coverage,
                 compilation_success=False,
                 errors=errors
             )
         
-        # 使用实际的测试类名（可能添加了Generated后缀）
         actual_test_class = self._actual_test_class or test_class
         
-        # 2. 编译测试
+        # 3. 编译测试
         print(f"[→] 编译测试: {actual_test_class}")
         compile_success = self._compile_test(actual_test_class)
         if not compile_success:
@@ -116,17 +128,27 @@ class TestEvaluator:
                 target_method=target_method,
                 test_results=[],
                 coverage=None,
+                baseline_coverage=baseline_coverage,
                 compilation_success=False,
                 errors=errors
             )
         
-        # 3. 运行测试
+        # 4. 运行测试
         print(f"[→] 运行测试: {actual_test_class}")
         test_results = self._run_test(actual_test_class)
         
-        # 4. 评估覆盖率
+        # 5. 评估覆盖率
         print(f"[→] 评估覆盖率: {target_class}")
         coverage = self._measure_coverage(target_class)
+        
+        # 6. 对比覆盖率变化
+        coverage_change = None
+        if baseline_coverage and coverage:
+            coverage_change = self.compare_coverage(baseline_coverage, coverage)
+            print(f"\n[→] 覆盖率变化:")
+            print(f"  行覆盖率: {baseline_coverage.line_coverage:.1f}% → {coverage.line_coverage:.1f}% ({coverage_change['line_coverage_change']:+.1f}%)")
+            print(f"  分支覆盖率: {baseline_coverage.branch_coverage:.1f}% → {coverage.branch_coverage:.1f}% ({coverage_change['branch_coverage_change']:+.1f}%)")
+            print(f"  覆盖行数: {baseline_coverage.covered_lines} → {coverage.covered_lines} ({coverage_change['line_change']:+d})")
         
         return EvaluationReport(
             test_file=test_file,
@@ -134,6 +156,8 @@ class TestEvaluator:
             target_method=target_method,
             test_results=test_results,
             coverage=coverage,
+            baseline_coverage=baseline_coverage,
+            coverage_change=coverage_change,
             compilation_success=True,
             errors=errors
         )
@@ -179,14 +203,16 @@ class TestEvaluator:
             with open(test_file, 'r', encoding='utf-8') as src:
                 content = src.read()
             
-            # 提取实际的测试类名（从生成的文件中）
-            actual_class_pattern = r'public\s+class\s+(\w+)'
-            match = re.search(actual_class_pattern, content)
-            if match:
-                actual_class_name = match.group(1)
-                print(f"  ✓ 检测到实际类名: {actual_class_name}")
+            # 提取实际的测试类名（从生成的文件中）- 不使用正则
+            actual_class_name = original_class_name
+            for line in content.split('\n'):
+                line = line.strip()
+                if line.startswith('public class ') and '{' in line:
+                    # 格式: public class ClassName {
+                    actual_class_name = line.split('public class ')[1].split('{')[0].strip()
+                    print(f"  ✓ 检测到实际类名: {actual_class_name}")
+                    break
             else:
-                actual_class_name = original_class_name
                 print(f"  ! 未检测到类名，使用预期类名: {original_class_name}")
             
             # 替换类名（使用实际提取的类名）
@@ -304,50 +330,38 @@ class TestEvaluator:
     
     def _run_test(self, test_class: str) -> List[TestResult]:
         """运行测试"""
-        # 确保在项目根目录执行命令
         project_root = self.project_dir if os.path.exists(os.path.join(self.project_dir, "pom.xml")) else os.path.dirname(self.project_dir)
         
-        # 设置JaCoCo代理
         jacoco_agent = f"-javaagent:{self.jacoco_home}/lib/jacocoagent.jar=destfile={self.exec_file},append=true"
         env = os.environ.copy()
         env["JAVA_TOOL_OPTIONS"] = jacoco_agent
         
-        # 提取简单的类名用于Dtest参数（Maven不需要完整包名）
         simple_class_name = test_class.split(".")[-1]
         
-        # 检查是否是多模块项目
         gson_module_path = os.path.join(project_root, "gson")
         if os.path.exists(gson_module_path):
-            # 多模块项目
-            cmd = [
-                "mvn", "test",
-                "-pl", "gson",
-                "-Dtest", simple_class_name,
-                "-q"
-            ]
+            cmd = ["mvn", "test", "-pl", "gson", "-Dtest", simple_class_name, "-q"]
         else:
-            # 单模块项目
-            cmd = [
-                "mvn", "test",
-                "-Dtest", simple_class_name,
-                "-q"
-            ]
+            cmd = ["mvn", "test", "-Dtest", simple_class_name, "-q"]
         
         results = []
         try:
-            result = subprocess.run(
-                cmd,
-                cwd=project_root,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                env=env
-            )
+            result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=120, env=env)
+            output = result.stdout + result.stderr
             
-            # 解析测试结果
-            results = self._parse_test_output(result.stdout + result.stderr)
+            # 直接输出原始结果，不做正则解析
+            if "Tests run:" in output:
+                # 提取包含 Tests run 的行
+                for line in output.split('\n'):
+                    if "Tests run:" in line:
+                        # 清理 ANSI 颜色代码输出
+                        clean_line = line.replace('\x1b', '').replace('[0m', '').replace('[1m', '')
+                        for code in ['[31m', '[32m', '[33m', '[34m', '[0;1m', '[1;31m', '[1;32m', '[1;33m', '[1;34m']:
+                            clean_line = clean_line.replace(code, '')
+                        print(f"  {clean_line.strip()}")
+            else:
+                print(f"  ! 无测试输出")
             
-            # 清理JaCoCo环境变量
             if "JAVA_TOOL_OPTIONS" in os.environ:
                 del os.environ["JAVA_TOOL_OPTIONS"]
             
@@ -355,44 +369,6 @@ class TestEvaluator:
             print(f"  ✗ 测试运行超时")
         except Exception as e:
             print(f"  ✗ 测试运行异常: {e}")
-        
-        return results
-    
-    def _parse_test_output(self, output: str) -> List[TestResult]:
-        """解析测试输出"""
-        results = []
-        
-        # 检查是否有编译错误
-        if "compilation problem" in output.lower() or "Unresolved compilation problem" in output:
-            # 编译错误
-            error_lines = []
-            for line in output.split('\n'):
-                if 'compilation problem' in line or 'Unresolved compilation problem' in line:
-                    error_lines.append(line.strip())
-            
-            print(f"  ✗ 测试编译错误:")
-            for error in error_lines[:3]:  # 只显示前3个
-                print(f"    {error}")
-            return results
-        
-        # 解析测试运行结果（简化版）
-        # Maven输出格式：Tests run: X, Failures: Y, Errors: Z, Skipped: W
-        test_run_pattern = r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+)"
-        match = re.search(test_run_pattern, output)
-        
-        if match:
-            total = int(match.group(1))
-            failures = int(match.group(2))
-            errors = int(match.group(3))
-            passed = total - failures - errors
-            
-            print(f"  ✓ 测试运行: {total}个, 通过: {passed}个, 失败: {failures}个, 错误: {errors}个")
-        else:
-            # 检查是否有测试但没有匹配格式
-            if "Tests run:" not in output:
-                print(f"  ! 未运行测试（可能是测试类名不匹配）")
-            else:
-                print(f"  ! 无法解析测试结果")
         
         return results
     
@@ -498,74 +474,118 @@ class TestEvaluator:
         total = covered + missed
         return (covered / total * 100) if total > 0 else 0.0
     
-    def get_baseline_coverage(self, target_class: str) -> Optional[CoverageReport]:
-        """
-        获取基准覆盖率（不包含新生成的测试）
+    def get_baseline_coverage(self, target_class: str, baseline_test: str = "JsonReaderTest") -> Optional[CoverageReport]:
+        """获取基准覆盖率（不包含新生成的测试）
         
         Args:
             target_class: 目标类全名
-            
-        Returns:
-            基准覆盖率报告
+            baseline_test: 用于获取基准覆盖率的测试类名
         """
-        print(f"[→] 获取基准覆盖率（不包含新生成测试）: {target_class}")
+        print(f"[→] 获取基准覆盖率（测试类: {baseline_test}）")
         
-        # 确保在项目根目录执行命令
         project_root = self.project_dir if os.path.exists(os.path.join(self.project_dir, "pom.xml")) else os.path.dirname(self.project_dir)
+        baseline_exec = "/tmp/baseline.exec"
         
-        # 清理并编译（确保编译状态一致）
-        print(f"  → 清理并编译...")
+        # 清理旧的构建
         gson_module_path = os.path.join(project_root, "gson")
-        if os.path.exists(gson_module_path):
-            # 多模块项目，只编译gson模块
-            cmd_clean = ["mvn", "clean", "compile", "test-compile", "-pl", "gson", "-am", "-q", "-DskipTests"]
-        else:
-            cmd_clean = ["mvn", "clean", "test-compile", "-q", "-DskipTests"]
-        subprocess.run(cmd_clean, cwd=project_root, capture_output=True, timeout=180)
+        target_dir = os.path.join(gson_module_path, "target") if os.path.exists(gson_module_path) else os.path.join(self.project_dir, "target")
+        if os.path.exists(target_dir):
+            subprocess.run(["rm", "-rf", target_dir], capture_output=True)
         
         # 设置JaCoCo代理
-        jacoco_agent = f"-javaagent:{self.jacoco_home}/lib/jacocoagent.jar=destfile={self.exec_file},append=true"
+        jacoco_agent = f"-javaagent:{self.jacoco_home}/lib/jacocoagent.jar=destfile={baseline_exec}"
         env = os.environ.copy()
         env["JAVA_TOOL_OPTIONS"] = jacoco_agent
         
-        # 运行所有现有测试（不包含新测试）
-        cmd = [
-            "mvn", "test",
-            "-pl", "gson" if os.path.exists(gson_module_path) else "",
-            "-q"
-        ]
-        # 移除空字符串参数
-        cmd = [arg for arg in cmd if arg]
+        # 运行基准测试
+        if os.path.exists(gson_module_path):
+            cmd = ["mvn", "clean", "test", "-pl", "gson", "-Dtest", baseline_test, "-q"]
+        else:
+            cmd = ["mvn", "clean", "test", "-Dtest", baseline_test, "-q"]
         
         try:
-            result = subprocess.run(
-                cmd,
-                cwd=project_root,
-                capture_output=True,
-                text=True,
-                timeout=180,
-                env=env
-            )
+            result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=180, env=env)
             
-            # 清理JaCoCo环境变量
-            if "JAVA_TOOL_OPTIONS" in os.environ:
-                del os.environ["JAVA_TOOL_OPTIONS"]
+            if not os.path.exists(baseline_exec):
+                print(f"  ✗ 基准覆盖率文件未生成")
+                return None
             
-            if result.returncode == 0:
-                print(f"  ✓ 基准测试运行完成")
-            else:
-                print(f"  ! 基准测试运行有问题（returncode={result.returncode}），继续测量覆盖率...")
-            
-            # 测量覆盖率
-            coverage = self._measure_coverage(target_class)
+            # 从exec文件读取覆盖率
+            coverage = self._get_coverage_from_exec(baseline_exec, target_class)
+            if coverage:
+                print(f"  ✓ 基准覆盖率: 行 {coverage.line_coverage:.1f}%, 分支 {coverage.branch_coverage:.1f}%")
             return coverage
             
-        except subprocess.TimeoutExpired:
-            print(f"  ✗ 基准测试运行超时")
-            return None
         except Exception as e:
-            print(f"  ✗ 基准覆盖率测量异常: {e}")
+            print(f"  ✗ 获取基准覆盖率失败: {e}")
             return None
+    
+    def _get_coverage_from_exec(self, exec_file: str, target_class: str) -> Optional[CoverageReport]:
+        """从JaCoCo exec文件获取覆盖率"""
+        try:
+            project_root = self.project_dir if os.path.exists(os.path.join(self.project_dir, "pom.xml")) else os.path.dirname(self.project_dir)
+            gson_module_path = os.path.join(project_root, "gson")
+            
+            if os.path.exists(gson_module_path):
+                classfiles_path = os.path.join(gson_module_path, "target/classes")
+            else:
+                classfiles_path = os.path.join(self.project_dir, "target/classes")
+            
+            # 生成CSV报告（更简单解析）
+            csv_file = "/tmp/coverage.csv"
+            cmd = [
+                "java", "-jar",
+                f"{self.jacoco_home}/lib/jacococli.jar",
+                "report", exec_file,
+                "--classfiles", classfiles_path,
+                "--csv", csv_file
+            ]
+            
+            subprocess.run(cmd, capture_output=True, timeout=60)
+            
+            # 解析CSV
+            if not os.path.exists(csv_file):
+                return None
+            
+            class_name = target_class.split(".")[-1]
+            with open(csv_file, 'r') as f:
+                lines = f.readlines()
+                for line in lines[1:]:  # 跳过表头
+                    parts = line.strip().split(',')
+                    if len(parts) >= 10 and parts[2] == class_name:
+                        # CSV格式: GROUP,PACKAGE,CLASS,INSTRUCTION_MISSED,INSTRUCTION_COVERED,BRANCH_MISSED,BRANCH_COVERED,LINE_MISSED,LINE_COVERED,...
+                        line_missed = int(parts[7])
+                        line_covered = int(parts[8])
+                        branch_missed = int(parts[5])
+                        branch_covered = int(parts[6])
+                        
+                        total_lines = line_missed + line_covered
+                        total_branches = branch_missed + branch_covered
+                        
+                        return CoverageReport(
+                            class_name=target_class,
+                            line_coverage=(line_covered / total_lines * 100) if total_lines > 0 else 0,
+                            branch_coverage=(branch_covered / total_branches * 100) if total_branches > 0 else 0,
+                            method_coverage=0,
+                            covered_lines=line_covered,
+                            total_lines=total_lines
+                        )
+            
+            return None
+            
+        except Exception as e:
+            print(f"  ✗ 覆盖率解析失败: {e}")
+            return None
+    
+    def compare_coverage(self, baseline: CoverageReport, new: CoverageReport) -> Dict:
+        """对比覆盖率变化"""
+        return {
+            "line_coverage_change": new.line_coverage - baseline.line_coverage,
+            "branch_coverage_change": new.branch_coverage - baseline.branch_coverage,
+            "line_change": new.covered_lines - baseline.covered_lines,
+            "baseline": baseline,
+            "new": new
+        }
 
 
 def print_report(report: EvaluationReport):

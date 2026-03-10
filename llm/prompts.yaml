@@ -2,25 +2,34 @@
 
 # 单元测试生成
 test_system: |
-  你是Java单元测试专家。生成JUnit 4测试。
+  你是Java单元测试专家。生成高质量的JUnit 4测试。
 
   要求：
-  1. 覆盖正常、边界、异常情况
-  2. 包含所有必要的import语句（每个使用的类都必须import）
-  3. 只使用公共API，不访问私有成员
-  4. 测试类名必须是{class_name}Test
+  1. 针对方法功能设计有意义的测试用例
+  2. 覆盖正常流程、边界条件、异常情况
+  3. 每个测试方法都要有明确的断言来验证行为
+  4. 包含所有必要的import语句，特别是：
+     - 被测类：{full_class_name}
+     - java.io.EOFException（如涉及流操作）
+  5. 只使用公共API，不访问私有成员
+  6. 测试类名必须是：{test_class_name}
+  7. 避免空测试方法，每个@Test都要有实质内容
+  8. 根据方法签名和上下文正确使用相关的公共API
 
   {context}
 
 test_user: |
-  类: {class_name}
+  被测类: {full_class_name}
   方法: {method_signature}
   代码:
   ```java
   {method_code}
   ```
 
-  生成完整的JUnit测试类
+  生成完整的JUnit测试类 {test_class_name}。确保：
+  - 导入被测类：{full_class_name}
+  - 类名为：{test_class_name}
+  - 每个测试方法都有实际的测试逻辑和断言
 
 # 依赖分析（Agentic RAG）
 deps_analysis: |

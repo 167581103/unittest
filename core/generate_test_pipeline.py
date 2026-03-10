@@ -125,7 +125,12 @@ async def step2_retrieve_context():
     print("=" * 60)
 
     agentic_rag = AgenticRAG(INDEX_PATH, test_dir=TEST_DIR)
-    context = await agentic_rag.retrieve_by_agent(TARGET_METHOD, target_class="JsonReader", top_k=3)
+    context = await agentic_rag.retrieve_by_agent(
+        TARGET_METHOD, 
+        target_class="JsonReader", 
+        top_k=3,
+        method_signature="public void skipValue() throws IOException"
+    )
 
     print(f"✓ 检索完成，上下文长度：{len(context)} 字符\n")
     return context
@@ -143,8 +148,8 @@ async def step3_generate_test(context: str, output_path: str):
         method_code=TARGET_METHOD,
         output_path=output_path,
         context=context,
-        temperature=0.7,
-        max_tokens=3000
+        test_class_name="JsonReader_skipValue_Test",
+        full_class_name="com.google.gson.stream.JsonReader",
     )
     
     if result["success"]:
@@ -376,16 +381,28 @@ def quick_generate(
         # 2. Agentic RAG检索上下文
         print("[→] Agentic RAG检索...")
         agentic_rag = AgenticRAG(INDEX_PATH, test_dir=TEST_DIR)
-        context = await agentic_rag.retrieve_by_agent(method_code, target_class=class_name, top_k=3)
+        context = await agentic_rag.retrieve_by_agent(
+            method_code, 
+            target_class=class_name, 
+            top_k=3,
+            method_signature=method_signature
+        )
 
         # 3. 生成测试
         print("[→] 生成测试...")
+        # 从方法签名提取方法名
+        method_name = method_signature.split()[1].split('(')[0] if '(' in method_signature else method_signature.split()[-1]
+        test_class_name = f"{class_name}_{method_name}_Test"
+        full_class_name = f"{package}.{class_name}"
+        
         result = await generate_test(
             class_name=class_name,
             method_signature=method_signature,
             method_code=method_code,
             output_path=output_path,
-            context=context
+            context=context,
+            test_class_name=test_class_name,
+            full_class_name=full_class_name,
         )
 
         if not result["success"]:
@@ -407,12 +424,12 @@ def quick_generate(
 
         # 4. 评估测试（包含新测试）
         print("[→] 评估新测试...")
-        test_class = f"{package}.{class_name}Test"
+        test_class = f"{package}.{test_class_name}"
         report = evaluator.evaluate(
             test_file=output_path,
             test_class=test_class,
-            target_class=f"{package}.{class_name}",
-            target_method=method_signature.split()[1].split('(')[0]  # 提取方法名
+            target_class=full_class_name,
+            target_method=method_name
         )
 
         # 5. 打印报告和对比

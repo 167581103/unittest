@@ -94,8 +94,22 @@ async def chat(prompt: str, system: str = None, **kw) -> str:
 
 def _extract_code(text: str) -> str:
     """提取代码块"""
+    # 移除开头的代码块标记
+    text = re.sub(r'^```(?:java)?\n?', '', text, flags=re.MULTILINE)
+    # 移除结尾的代码块标记  
+    text = re.sub(r'```\s*$', '', text, flags=re.MULTILINE)
+    # 尝试提取代码块内容
     matches = re.findall(r"```(?:java)?\n(.*?)```", text, re.DOTALL)
-    return "\n\n".join(matches) if matches else text
+    if matches:
+        code = "\n\n".join(matches)
+    else:
+        code = text
+    
+    # 确保类定义闭合
+    if code.count('{') > code.count('}'):
+        code += '\n}'
+    
+    return code.strip()
 
 
 async def generate_test(
@@ -104,13 +118,33 @@ async def generate_test(
     method_code: str,
     output_path: str,
     context: str = "",
+    test_class_name: str = None,
+    full_class_name: str = None,
 ) -> Dict:
-    """生成单元测试"""
-    system = PROMPTS["test_system"].format(class_name=class_name, context=context or "无上下文")
+    """生成单元测试
+    
+    Args:
+        class_name: 被测类简单名（如 JsonReader）
+        method_signature: 方法签名
+        method_code: 方法代码
+        output_path: 输出路径
+        context: RAG检索的上下文
+        test_class_name: 生成的测试类名（如 JsonReader_skipValue_Test），默认为 {class_name}Test
+        full_class_name: 被测类完整包名（如 com.google.gson.stream.JsonReader），用于import
+    """
+    test_class_name = test_class_name or f"{class_name}Test"
+    system = PROMPTS["test_system"].format(
+        class_name=class_name, 
+        test_class_name=test_class_name,
+        full_class_name=full_class_name or class_name,
+        context=context or "无上下文"
+    )
     prompt = PROMPTS["test_user"].format(
         class_name=class_name,
+        test_class_name=test_class_name,
         method_signature=method_signature,
         method_code=method_code,
+        full_class_name=full_class_name or class_name,
     )
 
     try:
