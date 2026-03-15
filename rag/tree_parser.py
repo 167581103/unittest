@@ -113,7 +113,7 @@ class JavaParser:
         super_class = None
         interfaces = []
         
-        # 解析类体
+        # 解析类体（class 或 enum）
         for child in node.children:
             if child.type == 'class_body':
                 for item in child.children:
@@ -125,6 +125,21 @@ class JavaParser:
                             fields.append(field_info)
                     elif item.type == 'constructor_declaration':
                         constructors.append(self._parse_method(item, content))
+                    elif item.type == 'method_declaration':
+                        methods.append(self._parse_method(item, content))
+            elif child.type == 'enum_body':
+                # 解析 enum 常量
+                for item in child.children:
+                    if item.type == 'enum_constant':
+                        const_info = self._parse_enum_constant(item, content)
+                        if const_info:
+                            constants.append(const_info)
+                    elif item.type == 'field_declaration':
+                        field_info = self._parse_field(item, content)
+                        if field_info.get('is_constant'):
+                            constants.append(field_info)
+                        else:
+                            fields.append(field_info)
                     elif item.type == 'method_declaration':
                         methods.append(self._parse_method(item, content))
             elif child.type == 'superclass':
@@ -175,6 +190,25 @@ class JavaParser:
             'type': field_type,
             'modifiers': modifiers,
             'is_constant': is_constant
+        }
+    
+    def _parse_enum_constant(self, node, content: str) -> Dict:
+        """解析枚举常量"""
+        name = ''
+        for child in node.children:
+            if child.type == 'identifier':
+                name = self._get_text(child, content)
+                break
+        
+        if not name:
+            return None
+        
+        return {
+            'signature': name,
+            'name': name,
+            'type': 'enum_constant',
+            'modifiers': ['public', 'static', 'final'],
+            'is_constant': True
         }
     
     def _parse_method(self, node, content: str) -> Dict:

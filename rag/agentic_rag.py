@@ -14,21 +14,32 @@ from .code_rag import CodeRAG
 class AgenticRAG:
     """Agentic RAG"""
 
-    def __init__(self, index_path: str, test_dir: str = None):
+    def __init__(self, index_path: str, test_dir: str = None, verbose: bool = True):
         self.rag = CodeRAG(index_path)
-        self.test_dir = test_dir  # 保留但不使用
+        self.test_dir = test_dir
+        self.verbose = verbose
+
+    def _log(self, msg: str):
+        """打印日志"""
+        if self.verbose:
+            print(f"  [AgenticRAG] {msg}")
 
     async def analyze_dependencies(self, code: str, cls: str) -> Dict[str, List[str]]:
         """LLM分析代码依赖"""
         from llm import chat, PROMPTS
 
+        self._log("正在调用LLM分析依赖...")
         prompt = PROMPTS["deps_analysis"].format(cls=cls, code=code)
         try:
             resp = await chat(prompt, temperature=0.1)
             match = re.search(r'\{[^{}]*\}', resp, re.DOTALL)
-            return json.loads(match.group()) if match else {"methods": [], "fields": [], "types": []}
-        except:
-            return {"methods": [], "fields": [], "types": []}
+            if match:
+                deps = json.loads(match.group())
+                self._log(f"LLM分析结果: methods={deps.get('methods', [])}, fields={deps.get('fields', [])}, types={deps.get('types', [])}")
+                return deps
+        except Exception as e:
+            self._log(f"LLM分析失败: {e}")
+        return {"methods": [], "fields": [], "types": []}
 
     def _find_method(self, name: str, target_cls: str) -> tuple:
         """查找方法定义"""
@@ -53,18 +64,18 @@ class AgenticRAG:
         called_methods = re.findall(r'\.(\w+)\s*\(', code)
         return_types = set()
         
+        self._log(f"检测到方法调用: {called_methods[:10]}")
+        
         for method_name in called_methods:
             method, owner = self._find_method(method_name, cls)
             if method and method.get("signature"):
-                # 从签名中提取返回值类型
                 sig = method["signature"]
-                # 简单解析：返回类型是签名中方法名前面的部分
                 parts = sig.split(method_name)[0].strip().split()
                 if parts:
-                    ret_type = parts[-1]  # 返回类型
-                    # 过滤掉基本类型和java.lang
+                    ret_type = parts[-1]
                     if ret_type and ret_type not in ['void', 'int', 'long', 'boolean', 'String', 'double', 'float', 'char', 'byte', 'short']:
                         return_types.add(ret_type)
+                        self._log(f"  方法 {method_name}() 返回类型: {ret_type}")
         
         return list(return_types)
     
@@ -72,7 +83,6 @@ class AgenticRAG:
         """从方法签名中提取参数类型"""
         if '(' not in method_signature:
             return []
-        # 提取参数部分
         params_part = method_signature.split('(')[1].split(')')[0]
         if not params_part.strip():
             return []
@@ -81,28 +91,38 @@ class AgenticRAG:
         for param in params_part.split(','):
             param = param.strip()
             if param:
-                # 参数类型是最后一个词前面的部分
                 parts = param.split()
                 if parts:
                     ptype = parts[-2] if len(parts) > 1 else parts[0]
-                    # 过滤基本类型
                     if ptype not in ['int', 'long', 'boolean', 'String', 'double', 'float', 'char', 'byte', 'short', 'void']:
                         param_types.append(ptype)
         return param_types
 
     async def retrieve(self, code: str, cls: str = None, top_k: int = 3, target_class: str = None, method_signature: str = None) -> str:
         """检索上下文"""
-        # 兼容两种参数名
         cls = cls or target_class
+        
+        print("\n[Agentic RAG] 开始智能检索...")
+        
         # 1. LLM分析依赖
         deps = await self.analyze_dependencies(code, cls)
         
-        parts = []
+        # 2. 静态分析返回值类型
+        self._log("静态分析方法返回值类型...")
+        return_types = self._extract_method_return_types(code, cls)
+        param_types = self._extract_param_types(method_signature) if method_signature else []
+        all_types = list(set(return_types + param_types + deps.get("types", [])))
         
-        # 2. 类结构
+        self._log(f"需要检索的类型: {all_types}")
+        
+        parts = []
+        retrieval_log = {"found": [], "not_found": []}
+        
+        # 3. 类结构
         if cls in self.rag.class_info:
             info = self.rag.class_info[cls]
             parts.append(f"## {info.package}.{cls}")
+            retrieval_log["found"].append(f"类定义: {cls}")
             
             if info.imports:
                 parts.append("\n### Imports\n" + "\n".join(f"import {i};" for i in info.imports[:10]))
@@ -119,12 +139,7 @@ class AgenticRAG:
             if info.constructors:
                 parts.append("\n### Constructors\n" + "\n".join(f"- {c['signature']}" for c in info.constructors[:3]))
 
-        # 2.5 提取方法返回值类型和参数类型（关键！）
-        return_types = self._extract_method_return_types(code, cls)
-        param_types = self._extract_param_types(method_signature) if method_signature else []
-        all_types = list(set(return_types + param_types + deps.get("types", [])))
-        
-        # 3. 依赖方法
+        # 4. 依赖方法
         for name in deps.get("methods", [])[:6]:
             method, owner = self._find_method(name, cls)
             if method:
@@ -132,24 +147,40 @@ class AgenticRAG:
                 parts.append(f"\n### {method['signature']}{marker}")
                 if owner == cls and method.get("code"):
                     parts.append(f"```java\n{method['code'][:500]}\n```")
+                retrieval_log["found"].append(f"方法: {name}")
+            else:
+                retrieval_log["not_found"].append(f"方法: {name}")
 
-        # 4. 依赖类型（包含返回值类型和参数类型）
+        # 5. 依赖类型（包含返回值类型和参数类型）- 关键！
         for name in all_types[:6]:
             type_info = self._find_type(name)
             if type_info:
                 parts.append(f"\n### {type_info.package}.{type_info.name}")
-                # 显示完整的类型定义（enum常量等）
                 if type_info.constants:
                     parts.append("Constants:\n" + "\n".join(f"  - {type_info.name}.{c.get('name', c.get('signature', ''))}" for c in type_info.constants[:15]))
                 if type_info.methods:
                     parts.append("Methods: " + ", ".join(m.get("signature", "").split()[0] for m in type_info.methods[:5]))
+                retrieval_log["found"].append(f"类型: {name} ({type_info.package}.{type_info.name})")
+            else:
+                retrieval_log["not_found"].append(f"类型: {name}")
 
-        # 5. 语义搜索补充
+        # 6. 语义搜索补充
+        self._log("语义搜索补充...")
         for block, _ in self.rag.search(code, top_k=top_k)[:2]:
             sig = block.signature
             if not any(m in sig for m in deps.get("methods", [])):
                 parts.append(f"\n### Related: {sig}\n```java\n{block.code[:400]}\n```")
 
+        # 打印检索总结
+        print("\n[Agentic RAG] 检索总结:")
+        print(f"  ✓ 找到: {len(retrieval_log['found'])} 项")
+        for item in retrieval_log["found"]:
+            print(f"    - {item}")
+        if retrieval_log["not_found"]:
+            print(f"  ✗ 未找到: {len(retrieval_log['not_found'])} 项")
+            for item in retrieval_log["not_found"]:
+                print(f"    - {item}")
+        
         return "\n".join(parts)
 
     # 别名，保持向后兼容

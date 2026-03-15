@@ -275,6 +275,23 @@ async def full_pipeline():
     print(context[:1500] if len(context) > 1500 else context)
     print("-" * 60 + "\n")
     
+    # 步骤2.5：获取基准覆盖率
+    print("=" * 60)
+    print("步骤2.5：获取基准覆盖率")
+    print("=" * 60)
+    evaluator = TestEvaluator(
+        project_dir=MAVEN_PROJECT_DIR,
+        jacoco_home=JACOCO_HOME
+    )
+    baseline_coverage = evaluator.get_baseline_coverage(
+        target_class="com.google.gson.stream.JsonReader"
+    )
+    if baseline_coverage:
+        print(f"  ✓ 基准覆盖率: 行 {baseline_coverage.line_coverage:.1f}%, 分支 {baseline_coverage.branch_coverage:.1f}%")
+    else:
+        print("  ! 无法获取基准覆盖率")
+    print()
+    
     # 步骤3：生成测试
     test_output_path = os.path.join(OUTPUT_DIR, "JsonReader_skipValue_Test.java")
     gen_result = await step3_generate_test(context, test_output_path)
@@ -282,9 +299,6 @@ async def full_pipeline():
     if not gen_result["success"]:
         print("\n✗ 流程终止：测试生成失败")
         return None
-        print(f"  - 分支覆盖率：{baseline_coverage.branch_coverage:.1f}%")
-    else:
-        print("\n! 无法获取基准覆盖率\n")
     
     # 步骤4：评估测试（包含新测试）
     report = await step4_evaluate(test_output_path)

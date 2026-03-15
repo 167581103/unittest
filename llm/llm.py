@@ -10,7 +10,8 @@ from typing import List, Dict
 from pathlib import Path
 
 import yaml
-from litellm import acompletion, embedding
+from litellm import acompletion
+from openai import OpenAI
 
 # ============ 配置 ============
 
@@ -47,18 +48,23 @@ PROMPTS = _load_prompts()
 
 def embed(texts: List[str], retries: int = 3) -> List[List[float]]:
     """获取嵌入向量"""
-    params = {
-        "model": CONFIG["embedding_model"],
-        "input": texts,
-        "api_key": CONFIG["embedding_api_key"],
-    }
-    if CONFIG["embedding_base_url"]:
-        params["api_base"] = CONFIG["embedding_base_url"]
-
+    client = OpenAI(
+        api_key=CONFIG["embedding_api_key"],
+        base_url=CONFIG["embedding_base_url"]
+    )
+    
+    # 提取模型名称（去掉 openai/ 前缀）
+    model = CONFIG["embedding_model"]
+    if model.startswith("openai/"):
+        model = model[7:]
+    
     for i in range(retries):
         try:
-            resp = embedding(**params)
-            return [d["embedding"] for d in resp["data"]]
+            resp = client.embeddings.create(
+                model=model,
+                input=texts
+            )
+            return [d.embedding for d in resp.data]
         except Exception as e:
             if i < retries - 1:
                 time.sleep(2 ** i)
