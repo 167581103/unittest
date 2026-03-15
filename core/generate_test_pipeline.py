@@ -33,73 +33,49 @@ REPORT_DIR = "/tmp/test_reports"
 
 # ============ 目标方法 ============
 
-TARGET_METHOD = '''public void skipValue() throws IOException {
-    int count = 0;
-    do {
-      int p = peeked;
-      if (p == PEEKED_NONE) {
-        p = doPeek();
-      }
+TARGET_METHOD = '''public long nextLong() throws IOException {
+    int p = peeked;
+    if (p == PEEKED_NONE) {
+      p = doPeek();
+    }
 
-      switch (p) {
-        case PEEKED_BEGIN_ARRAY:
-          push(JsonScope.EMPTY_ARRAY);
-          count++;
-          break;
-        case PEEKED_BEGIN_OBJECT:
-          push(JsonScope.EMPTY_OBJECT);
-          count++;
-          break;
-        case PEEKED_END_ARRAY:
-          stackSize--;
-          count--;
-          break;
-        case PEEKED_END_OBJECT:
-          if (count == 0) {
-            pathNames[stackSize - 1] = null;
-          }
-          stackSize--;
-          count--;
-          break;
-        case PEEKED_UNQUOTED:
-          skipUnquotedValue();
-          break;
-        case PEEKED_SINGLE_QUOTED:
-          skipQuotedValue('\'');
-          break;
-        case PEEKED_DOUBLE_QUOTED:
-          skipQuotedValue('"');
-          break;
-        case PEEKED_UNQUOTED_NAME:
-          skipUnquotedValue();
-          if (count == 0) {
-            pathNames[stackSize - 1] = "<skipped>";
-          }
-          break;
-        case PEEKED_SINGLE_QUOTED_NAME:
-          skipQuotedValue('\'');
-          if (count == 0) {
-            pathNames[stackSize - 1] = "<skipped>";
-          }
-          break;
-        case PEEKED_DOUBLE_QUOTED_NAME:
-          skipQuotedValue('"');
-          if (count == 0) {
-            pathNames[stackSize - 1] = "<skipped>";
-          }
-          break;
-        case PEEKED_NUMBER:
-          pos += peekedNumberLength;
-          break;
-        case PEEKED_EOF:
-          return;
-        default:
-          // Do nothing
-      }
+    if (p == PEEKED_LONG) {
       peeked = PEEKED_NONE;
-    } while (count > 0);
+      pathIndices[stackSize - 1]++;
+      return peekedLong;
+    }
 
+    if (p == PEEKED_NUMBER) {
+      peekedString = new String(buffer, pos, peekedNumberLength);
+      pos += peekedNumberLength;
+    } else if (p == PEEKED_SINGLE_QUOTED || p == PEEKED_DOUBLE_QUOTED || p == PEEKED_UNQUOTED) {
+      if (p == PEEKED_UNQUOTED) {
+        peekedString = nextUnquotedValue();
+      } else {
+        peekedString = nextQuotedValue(p == PEEKED_SINGLE_QUOTED ? '\\'' : '"');
+      }
+      try {
+        long result = Long.parseLong(peekedString);
+        peeked = PEEKED_NONE;
+        pathIndices[stackSize - 1]++;
+        return result;
+      } catch (NumberFormatException ignored) {
+        // Fall back to parse as a double below.
+      }
+    } else {
+      throw unexpectedTokenError("a long");
+    }
+
+    peeked = PEEKED_BUFFERED;
+    double asDouble = Double.parseDouble(peekedString);
+    long result = (long) asDouble;
+    if (result != asDouble) {
+      throw new NumberFormatException("Expected a long but was " + peekedString + locationString());
+    }
+    peekedString = null;
+    peeked = PEEKED_NONE;
     pathIndices[stackSize - 1]++;
+    return result;
   }'''
 
 
@@ -129,7 +105,7 @@ async def step2_retrieve_context():
         TARGET_METHOD, 
         target_class="JsonReader", 
         top_k=3,
-        method_signature="public void skipValue() throws IOException"
+        method_signature="public long nextLong() throws IOException"
     )
 
     print(f"✓ 检索完成，上下文长度：{len(context)} 字符\n")
@@ -144,11 +120,11 @@ async def step3_generate_test(context: str, output_path: str):
     
     result = await generate_test(
         class_name="JsonReader",
-        method_signature="public void skipValue() throws IOException",
+        method_signature="public long nextLong() throws IOException",
         method_code=TARGET_METHOD,
         output_path=output_path,
         context=context,
-        test_class_name="JsonReader_skipValue_Test",
+        test_class_name="JsonReader_nextLong_Test",
         full_class_name="com.google.gson.stream.JsonReader",
     )
     
@@ -180,7 +156,7 @@ async def step4_evaluate(test_file: str):
         test_file=test_file,
         test_class="com.google.gson.stream.JsonReaderTest",
         target_class="com.google.gson.stream.JsonReader",
-        target_method="skipValue"
+        target_method="nextLong"
     )
     
     return report
@@ -293,7 +269,7 @@ async def full_pipeline():
     print()
     
     # 步骤3：生成测试
-    test_output_path = os.path.join(OUTPUT_DIR, "JsonReader_skipValue_Test.java")
+    test_output_path = os.path.join(OUTPUT_DIR, "JsonReader_nextLong_Test.java")
     gen_result = await step3_generate_test(context, test_output_path)
     
     if not gen_result["success"]:

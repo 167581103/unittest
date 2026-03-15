@@ -60,7 +60,6 @@ class AgenticRAG:
 
     def _extract_method_return_types(self, code: str, cls: str) -> List[str]:
         """从代码中提取调用的方法的返回值类型"""
-        # 提取代码中调用的方法名
         called_methods = re.findall(r'\.(\w+)\s*\(', code)
         return_types = set()
         
@@ -68,14 +67,11 @@ class AgenticRAG:
         
         for method_name in called_methods:
             method, owner = self._find_method(method_name, cls)
-            if method and method.get("signature"):
-                sig = method["signature"]
-                parts = sig.split(method_name)[0].strip().split()
-                if parts:
-                    ret_type = parts[-1]
-                    if ret_type and ret_type not in ['void', 'int', 'long', 'boolean', 'String', 'double', 'float', 'char', 'byte', 'short']:
-                        return_types.add(ret_type)
-                        self._log(f"  方法 {method_name}() 返回类型: {ret_type}")
+            if method:
+                ret_type = method.get("return_type", "")
+                if ret_type and ret_type not in ['void', 'int', 'long', 'boolean', 'String', 'double', 'float', 'char', 'byte', 'short']:
+                    return_types.add(ret_type)
+                    self._log(f"  方法 {method_name}() 返回类型: {ret_type}")
         
         return list(return_types)
     

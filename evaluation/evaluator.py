@@ -344,52 +344,47 @@ class TestEvaluator:
         results = []
         gson_module_path = os.path.join(project_root, "gson")
         
-        # 分别运行每个测试类，使用同一个exec文件累积覆盖率
-        for test_class in test_classes:
-            jacoco_agent = f"-javaagent:{self.jacoco_home}/lib/jacocoagent.jar=destfile={self.exec_file},append=true"
-            env = os.environ.copy()
-            env["JAVA_TOOL_OPTIONS"] = jacoco_agent
+        # 在运行测试前删除旧的 exec 文件
+        if os.path.exists(self.exec_file):
+            os.remove(self.exec_file)
+        
+        # 一次性运行所有测试类，累积覆盖率
+        test_class_names = [tc.split(".")[-1] for tc in test_classes]
+        test_pattern = ",".join(test_class_names)
+        
+        # 使用 JAVA_TOOL_OPTIONS 传递 JaCoCo agent（不指定 append，让 JaCoCo 默认覆盖）
+        jacoco_agent = f"-javaagent:{self.jacoco_home}/lib/jacocoagent.jar=destfile={self.exec_file}"
+        env = os.environ.copy()
+        env["JAVA_TOOL_OPTIONS"] = jacoco_agent
+        
+        if os.path.exists(gson_module_path):
+            cmd = [
+                "mvn", "test",
+                "-pl", "gson",
+                "-am",
+                f"-Dtest={test_pattern}"
+            ]
+        else:
+            cmd = ["mvn", "test", f"-Dtest={test_pattern}"]
+        
+        try:
+            result = subprocess.run(cmd, cwd=project_root, text=True, timeout=120, env=env)
             
-            simple_class_name = test_class.split(".")[-1]
-            
-            if os.path.exists(gson_module_path):
-                # 跳过有问题的test-jpms模块，只运行gson模块
-                cmd = [
-                    "mvn", "test",
-                    "-pl", "gson",
-                    "-am",
-                    f"-Dtest={simple_class_name}"
-                ]
+            if result.returncode == 0:
+                print(f"  ✓ 测试运行完成")
             else:
-                cmd = ["mvn", "test", f"-Dtest={simple_class_name}"]
+                print(f"  ✗ 测试运行失败 (返回码: {result.returncode})")
             
-            try:
-                # 不使用capture_output，让输出直接显示
-                result = subprocess.run(cmd, cwd=project_root, text=True, timeout=120, env=env)
-                
-                # 检查返回码
-                if result.returncode == 0:
-                    print(f"  ✓ 测试运行完成")
-                else:
-                    print(f"  ✗ 测试运行失败 (返回码: {result.returncode})")
-                
-                if "JAVA_TOOL_OPTIONS" in os.environ:
-                    del os.environ["JAVA_TOOL_OPTIONS"]
-                
-            except subprocess.TimeoutExpired:
-                print(f"  ✗ 测试运行超时")
-            except Exception as e:
-                print(f"  ✗ 测试运行异常: {e}")
+        except subprocess.TimeoutExpired:
+            print(f"  ✗ 测试运行超时")
+        except Exception as e:
+            print(f"  ✗ 测试运行异常: {e}")
         
         return results
     
     def _measure_coverage(self, target_class: str) -> Optional[CoverageReport]:
         """测量代码覆盖率"""
-        # 删除旧的exec文件，避免累积效应
-        if os.path.exists(self.exec_file):
-            os.remove(self.exec_file)
-
-        # 使用统一的CSV解析方法
+        # 直接从 exec 文件读取覆盖率（exec 文件由 _run_test 生成）
         return self._get_coverage_from_exec(self.exec_file, target_class)
     
     def _parse_coverage_report(self, target_class: str) -> Optional[CoverageReport]:
@@ -453,28 +448,27 @@ class TestEvaluator:
         project_root = self.project_dir if os.path.exists(os.path.join(self.project_dir, "pom.xml")) else os.path.dirname(self.project_dir)
         baseline_exec = "/tmp/baseline.exec"
         
-        # 清理旧的构建
-        gson_module_path = os.path.join(project_root, "gson")
-        target_dir = os.path.join(gson_module_path, "target") if os.path.exists(gson_module_path) else os.path.join(self.project_dir, "target")
-        if os.path.exists(target_dir):
-            subprocess.run(["rm", "-rf", target_dir], capture_output=True)
+        # 删除旧的 exec 文件
+        if os.path.exists(baseline_exec):
+            os.remove(baseline_exec)
         
-        # 设置JaCoCo代理
+        # 使用 JAVA_TOOL_OPTIONS 传递 JaCoCo agent（不指定 append）
         jacoco_agent = f"-javaagent:{self.jacoco_home}/lib/jacocoagent.jar=destfile={baseline_exec}"
         env = os.environ.copy()
         env["JAVA_TOOL_OPTIONS"] = jacoco_agent
         
-        # 运行基准测试 - 跳过有问题的test-jpms模块
+        # 运行基准测试
+        gson_module_path = os.path.join(project_root, "gson")
         if os.path.exists(gson_module_path):
             cmd = [
-                "mvn", "clean", "test",
+                "mvn", "test",
                 "-pl", "gson",
                 "-am",
                 f"-Dtest={baseline_test}",
-                "-Dmaven.test.skip=true"
+                "-DfailIfNoTests=false"
             ]
         else:
-            cmd = ["mvn", "clean", "test", f"-Dtest={baseline_test}"]
+            cmd = ["mvn", "test", f"-Dtest={baseline_test}", "-DfailIfNoTests=false"]
         
         try:
             result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=180, env=env)
