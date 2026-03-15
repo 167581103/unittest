@@ -27,6 +27,16 @@ class TestResult:
 
 
 @dataclass
+class MethodCoverage:
+    """单个方法的覆盖率"""
+    method_name: str
+    line_coverage: float
+    branch_coverage: float
+    covered_lines: int
+    total_lines: int
+
+
+@dataclass
 class CoverageReport:
     """覆盖率报告"""
     class_name: str
@@ -35,6 +45,18 @@ class CoverageReport:
     method_coverage: float
     covered_lines: int
     total_lines: int
+    method_coverages: List[MethodCoverage] = None  # 方法级别覆盖率
+    
+    def __post_init__(self):
+        if self.method_coverages is None:
+            self.method_coverages = []
+    
+    def get_method_coverage(self, method_name: str) -> Optional[MethodCoverage]:
+        """获取指定方法的覆盖率"""
+        for mc in self.method_coverages:
+            if mc.method_name == method_name:
+                return mc
+        return None
 
 
 @dataclass
@@ -488,7 +510,7 @@ class TestEvaluator:
             return None
     
     def _get_coverage_from_exec(self, exec_file: str, target_class: str) -> Optional[CoverageReport]:
-        """从JaCoCo exec文件获取覆盖率"""
+        """从JaCoCo exec文件获取覆盖率（包含方法级别）"""
         try:
             project_root = self.project_dir if os.path.exists(os.path.join(self.project_dir, "pom.xml")) else os.path.dirname(self.project_dir)
             gson_module_path = os.path.join(project_root, "gson")
@@ -498,50 +520,97 @@ class TestEvaluator:
             else:
                 classfiles_path = os.path.join(self.project_dir, "target/classes")
             
-            # 生成CSV报告（更简单解析）
-            csv_file = "/tmp/coverage.csv"
+            # 生成XML报告（支持方法级别覆盖率）
+            xml_file = "/tmp/coverage.xml"
             cmd = [
                 "java", "-jar",
                 f"{self.jacoco_home}/lib/jacococli.jar",
                 "report", exec_file,
                 "--classfiles", classfiles_path,
-                "--csv", csv_file
+                "--xml", xml_file
             ]
             
             subprocess.run(cmd, capture_output=True, timeout=60)
             
-            # 解析CSV
-            if not os.path.exists(csv_file):
+            # 解析XML报告
+            if not os.path.exists(xml_file):
                 return None
             
+            return self._parse_xml_coverage(xml_file, target_class)
+            
+        except Exception as e:
+            print(f"  ✗ 覆盖率解析失败: {e}")
+            return None
+    
+    def _parse_xml_coverage(self, xml_file: str, target_class: str) -> Optional[CoverageReport]:
+        """解析JaCoCo XML报告（支持方法级别）"""
+        import xml.etree.ElementTree as ET
+        
+        try:
+            tree = ET.parse(xml_file)
+            root = tree.getroot()
+            
             class_name = target_class.split(".")[-1]
-            with open(csv_file, 'r') as f:
-                lines = f.readlines()
-                for line in lines[1:]:  # 跳过表头
-                    parts = line.strip().split(',')
-                    if len(parts) >= 10 and parts[2] == class_name:
-                        # CSV格式: GROUP,PACKAGE,CLASS,INSTRUCTION_MISSED,INSTRUCTION_COVERED,BRANCH_MISSED,BRANCH_COVERED,LINE_MISSED,LINE_COVERED,...
-                        line_missed = int(parts[7])
-                        line_covered = int(parts[8])
-                        branch_missed = int(parts[5])
-                        branch_covered = int(parts[6])
+            # XML中class的name格式为: com/google/gson/stream/JsonReader
+            class_path = target_class.replace(".", "/")
+            
+            # 查找目标类
+            for package in root.findall(".//package"):
+                for cls in package.findall("class"):
+                    cls_name = cls.get("name", "")
+                    # 匹配: 完整路径 或 简单类名（排除内部类）
+                    if cls_name == class_path or (cls_name.endswith("/" + class_name) and "$" not in cls_name):
+                        # 解析类级别覆盖率
+                        class_counters = {c.get("type"): c for c in cls.findall("counter")}
+                        
+                        line_missed = int(class_counters.get("LINE", {}).get("missed", 0))
+                        line_covered = int(class_counters.get("LINE", {}).get("covered", 0))
+                        branch_missed = int(class_counters.get("BRANCH", {}).get("missed", 0))
+                        branch_covered = int(class_counters.get("BRANCH", {}).get("covered", 0))
+                        method_missed = int(class_counters.get("METHOD", {}).get("missed", 0))
+                        method_covered = int(class_counters.get("METHOD", {}).get("covered", 0))
                         
                         total_lines = line_missed + line_covered
                         total_branches = branch_missed + branch_covered
+                        total_methods = method_missed + method_covered
+                        
+                        # 解析方法级别覆盖率
+                        method_coverages = []
+                        for method in cls.findall("method"):
+                            method_name = method.get("name", "")
+                            method_counters = {c.get("type"): c for c in method.findall("counter")}
+                            
+                            m_line_missed = int(method_counters.get("LINE", {}).get("missed", 0))
+                            m_line_covered = int(method_counters.get("LINE", {}).get("covered", 0))
+                            m_branch_missed = int(method_counters.get("BRANCH", {}).get("missed", 0))
+                            m_branch_covered = int(method_counters.get("BRANCH", {}).get("covered", 0))
+                            
+                            m_total_lines = m_line_missed + m_line_covered
+                            m_total_branches = m_branch_missed + m_branch_covered
+                            
+                            if m_total_lines > 0:  # 只记录有代码行的方法
+                                method_coverages.append(MethodCoverage(
+                                    method_name=method_name,
+                                    line_coverage=(m_line_covered / m_total_lines * 100) if m_total_lines > 0 else 0,
+                                    branch_coverage=(m_branch_covered / m_total_branches * 100) if m_total_branches > 0 else 0,
+                                    covered_lines=m_line_covered,
+                                    total_lines=m_total_lines
+                                ))
                         
                         return CoverageReport(
                             class_name=target_class,
                             line_coverage=(line_covered / total_lines * 100) if total_lines > 0 else 0,
                             branch_coverage=(branch_covered / total_branches * 100) if total_branches > 0 else 0,
-                            method_coverage=0,
+                            method_coverage=(method_covered / total_methods * 100) if total_methods > 0 else 0,
                             covered_lines=line_covered,
-                            total_lines=total_lines
+                            total_lines=total_lines,
+                            method_coverages=method_coverages
                         )
             
             return None
             
         except Exception as e:
-            print(f"  ✗ 覆盖率解析失败: {e}")
+            print(f"  ✗ XML解析失败: {e}")
             return None
     
     def compare_coverage(self, baseline: CoverageReport, new: CoverageReport) -> Dict:
@@ -553,10 +622,28 @@ class TestEvaluator:
             "baseline": baseline,
             "new": new
         }
+    
+    def find_low_coverage_methods(self, coverage: CoverageReport, threshold: float = 80.0) -> List[MethodCoverage]:
+        """查找覆盖率低于阈值的方法
+        
+        Args:
+            coverage: 覆盖率报告
+            threshold: 覆盖率阈值（默认80%）
+        
+        Returns:
+            按覆盖率排序的方法列表
+        """
+        low_cov = [mc for mc in coverage.method_coverages if mc.line_coverage < threshold]
+        return sorted(low_cov, key=lambda x: x.line_coverage)
 
 
-def print_report(report: EvaluationReport):
-    """打印评估报告"""
+def print_report(report: EvaluationReport, show_method_coverage: bool = True):
+    """打印评估报告
+    
+    Args:
+        report: 评估报告
+        show_method_coverage: 是否显示方法级别覆盖率
+    """
     print("\n" + "=" * 60)
     print("评估报告")
     print("=" * 60)
@@ -582,6 +669,14 @@ def print_report(report: EvaluationReport):
         print(f"  行覆盖率: {report.coverage.line_coverage:.1f}% ({report.coverage.covered_lines}/{report.coverage.total_lines})")
         print(f"  分支覆盖率: {report.coverage.branch_coverage:.1f}%")
         print(f"  方法覆盖率: {report.coverage.method_coverage:.1f}%")
+        
+        # 显示目标方法的覆盖率
+        if show_method_coverage and report.coverage.method_coverages:
+            target_mc = report.coverage.get_method_coverage(report.target_method)
+            if target_mc:
+                print(f"\n  目标方法 [{report.target_method}] 覆盖率:")
+                print(f"    行覆盖率: {target_mc.line_coverage:.1f}% ({target_mc.covered_lines}/{target_mc.total_lines})")
+                print(f"    分支覆盖率: {target_mc.branch_coverage:.1f}%")
     
     print("\n" + "=" * 60)
 
