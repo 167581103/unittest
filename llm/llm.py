@@ -130,6 +130,62 @@ def _extract_code(text: str) -> str:
     return code.strip()
 
 
+# JUnit4 symbol -> import statement mapping
+_JUNIT_IMPORT_MAP = {
+    "assertEquals":    "import static org.junit.Assert.assertEquals;",
+    "assertNotEquals": "import static org.junit.Assert.assertNotEquals;",
+    "assertTrue":      "import static org.junit.Assert.assertTrue;",
+    "assertFalse":     "import static org.junit.Assert.assertFalse;",
+    "assertNull":      "import static org.junit.Assert.assertNull;",
+    "assertNotNull":   "import static org.junit.Assert.assertNotNull;",
+    "assertSame":      "import static org.junit.Assert.assertSame;",
+    "assertNotSame":   "import static org.junit.Assert.assertNotSame;",
+    "assertArrayEquals": "import static org.junit.Assert.assertArrayEquals;",
+    "assertThrows":    "import static org.junit.Assert.assertThrows;",
+    "fail":            "import static org.junit.Assert.fail;",
+    "@Test":           "import org.junit.Test;",
+    "@Before":         "import org.junit.Before;",
+    "@After":          "import org.junit.After;",
+    "@BeforeClass":    "import org.junit.BeforeClass;",
+    "@AfterClass":     "import org.junit.AfterClass;",
+    "@Ignore":         "import org.junit.Ignore;",
+}
+
+
+def _fix_imports(code: str) -> str:
+    """Scan generated code and inject missing JUnit imports."""
+    existing = set(re.findall(r'^import[^;]+;', code, re.MULTILINE))
+
+    to_add = []
+    for symbol, import_stmt in _JUNIT_IMPORT_MAP.items():
+        if import_stmt in existing:
+            continue
+        # Match symbol as a standalone token (not inside a string or comment)
+        pattern = r'(?<![\w.])' + re.escape(symbol) + r'(?![\w])'
+        if re.search(pattern, code):
+            to_add.append(import_stmt)
+
+    if not to_add:
+        return code
+
+    # Insert after the last existing import line
+    last_import = list(re.finditer(r'^import[^;]+;', code, re.MULTILINE))
+    if last_import:
+        insert_pos = last_import[-1].end()
+        addition = "\n" + "\n".join(sorted(to_add))
+        return code[:insert_pos] + addition + code[insert_pos:]
+
+    # No imports at all: insert after package declaration
+    pkg_match = re.search(r'^package[^;]+;', code, re.MULTILINE)
+    if pkg_match:
+        insert_pos = pkg_match.end()
+        addition = "\n\n" + "\n".join(sorted(to_add))
+        return code[:insert_pos] + addition + code[insert_pos:]
+
+    # Fallback: prepend
+    return "\n".join(sorted(to_add)) + "\n\n" + code
+
+
 async def generate_test(
     class_name: str,
     method_signature: str,
@@ -168,6 +224,7 @@ async def generate_test(
     try:
         resp = await chat(prompt, system, temperature=0.7, max_tokens=2000)
         code = _extract_code(resp)
+        code = _fix_imports(code)
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
