@@ -1,8 +1,16 @@
 #!/bin/bash
 
+# Set Java 17 as default
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+export PATH=$JAVA_HOME/bin:$PATH
+
+# Set Maven 3.9.6
+export M2_HOME=/opt/maven-new
+export PATH=$M2_HOME/bin:$PATH
+
 # Get project root directory
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-JACOCO_HOME="$PROJECT_ROOT/lib/jacoco-0.8.14"
+JACOCO_HOME="$PROJECT_ROOT/lib"
 
 export JAVA_TOOL_OPTIONS="-javaagent:$JACOCO_HOME/lib/jacocoagent.jar=destfile=/tmp/gson-jacoco.exec,append=true"
 

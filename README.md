@@ -8,6 +8,71 @@ UNITTEST
 |--- data: Dataset Module
 |--- core: Core Module
 
+## 环境安装步骤
+
+### 1. 克隆项目
+```bash
+git clone https://github.com/167581103/unittest.git
+cd unittest
+```
+
+### 2. 安装 Java 17
+```bash
+yum install -y java-17-openjdk java-17-openjdk-devel java-17-openjdk-jmods
+```
+
+### 3. 安装 Maven 3.9.6
+```bash
+cd /opt
+wget https://archive.apache.org/dist/maven/maven-3/3.9.6/binaries/apache-maven-3.9.6-bin.tar.gz
+tar -xzf apache-maven-3.9.6-bin.tar.gz
+mv apache-maven-3.9.6 /opt/maven-new
+rm apache-maven-3.9.6-bin.tar.gz
+```
+
+### 4. 运行 setup.sh 安装 Jacoco
+```bash
+cd /data/workspace/unittest
+bash setup.sh
+```
+此脚本会自动下载 Jacoco 0.8.14 到 `lib/` 目录。
+
+### 5. 运行测试
+```bash
+bash evaluation/run.sh
+```
+
+## run.sh 脚本改造说明
+
+`evaluation/run.sh` 脚本进行了以下修改：
+
+1. **Java 环境设置**：添加 Java 17 环境变量
+   ```bash
+   export JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+   export PATH=$JAVA_HOME/bin:$PATH
+   ```
+
+2. **Maven 路径配置**：添加 Maven 3.9.6 路径
+   ```bash
+   export M2_HOME=/opt/maven-new
+   export PATH=$M2_HOME/bin:$PATH
+   ```
+
+3. **Jacoco 路径修正**：将 Jacoco 路径从 `lib/jacoco-0.8.14` 改为 `lib`
+   ```bash
+   # 原路径：JACOCO_HOME="$PROJECT_ROOT/lib/jacoco-0.8.14"
+   # 新路径：JACOCO_HOME="$PROJECT_ROOT/lib"
+   ```
+
+## 环境要求
+
+| 组件 | 版本 | 路径 |
+|------|------|------|
+| Java | OpenJDK 17 | `/usr/lib/jvm/java-17-openjdk` |
+| Maven | 3.9.6 | `/opt/maven-new` |
+| Jacoco | 0.8.14 | `lib/lib/` |
+
+## 工作流程
 
 1. 离线嵌入实现，这一步做好分块、向量模型选取、向量数据库选型；
 2. 在线RAG实现，这一步做好检索策略和重排策略；
