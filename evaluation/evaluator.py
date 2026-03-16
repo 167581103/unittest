@@ -305,13 +305,15 @@ class TestEvaluator:
                 "mvn", "compile", "test-compile",
                 "-pl", "gson",
                 "-am",
-                "-DskipTests"
+                "-DskipTests",
+                "-Dmaven.compiler.failOnWarning=false"
             ]
         else:
             # 单模块项目
             cmd = [
                 "mvn", "compile", "test-compile",
-                "-DskipTests"
+                "-DskipTests",
+                "-Dmaven.compiler.failOnWarning=false"
             ]
         
         try:
@@ -384,10 +386,11 @@ class TestEvaluator:
                 "mvn", "test",
                 "-pl", "gson",
                 "-am",
-                f"-Dtest={test_pattern}"
+                f"-Dtest={test_pattern}",
+                "-Dmaven.compiler.failOnWarning=false"
             ]
         else:
-            cmd = ["mvn", "test", f"-Dtest={test_pattern}"]
+            cmd = ["mvn", "test", f"-Dtest={test_pattern}", "-Dmaven.compiler.failOnWarning=false"]
         
         try:
             result = subprocess.run(cmd, cwd=project_root, text=True, timeout=120, env=env)
@@ -478,6 +481,12 @@ class TestEvaluator:
         jacoco_agent = f"-javaagent:{self.jacoco_home}/lib/jacocoagent.jar=destfile={baseline_exec}"
         env = os.environ.copy()
         env["JAVA_TOOL_OPTIONS"] = jacoco_agent
+        # 设置 Java 17 环境变量（gson 项目需要 Java 17）
+        env["JAVA_HOME"] = "/usr/lib/jvm/java-17-openjdk"
+        env["PATH"] = f"/usr/lib/jvm/java-17-openjdk/bin:{env.get('PATH', '')}"
+        # 设置 Maven 版本（需要较新版本支持 gson 项目的 pom.xml）
+        env["M2_HOME"] = "/opt/maven-new"
+        env["PATH"] = f"/opt/maven-new/bin:{env.get('PATH', '')}"
         
         # 运行基准测试
         gson_module_path = os.path.join(project_root, "gson")
@@ -487,22 +496,35 @@ class TestEvaluator:
                 "-pl", "gson",
                 "-am",
                 f"-Dtest={baseline_test}",
-                "-DfailIfNoTests=false"
+                "-DfailIfNoTests=false",
+                "-Dmaven.compiler.failOnWarning=false"
             ]
         else:
-            cmd = ["mvn", "test", f"-Dtest={baseline_test}", "-DfailIfNoTests=false"]
+            cmd = ["mvn", "test", f"-Dtest={baseline_test}", "-DfailIfNoTests=false", "-Dmaven.compiler.failOnWarning=false"]
         
         try:
-            result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=180, env=env)
+            # 不使用 capture_output，让 Maven 输出显示出来以便诊断问题
+            result = subprocess.run(cmd, cwd=project_root, timeout=180, env=env)
+            
+            # 检查 Maven 返回码
+            if result.returncode != 0:
+                print(f"  ✗ Maven 构建失败，返回码: {result.returncode}")
+                return None
             
             if not os.path.exists(baseline_exec):
-                print(f"  ✗ 基准覆盖率文件未生成")
+                print(f"  ✗ 基准覆盖率文件未生成: {baseline_exec}")
                 return None
+            
+            # 检查 exec 文件大小
+            exec_size = os.path.getsize(baseline_exec)
+            print(f"  ✓ 基准覆盖率文件大小: {exec_size} bytes")
             
             # 从exec文件读取覆盖率
             coverage = self._get_coverage_from_exec(baseline_exec, target_class)
             if coverage:
                 print(f"  ✓ 基准覆盖率: 行 {coverage.line_coverage:.1f}%, 分支 {coverage.branch_coverage:.1f}%")
+            else:
+                print(f"  ✗ 无法从 exec 文件解析覆盖率")
             return coverage
             
         except Exception as e:
