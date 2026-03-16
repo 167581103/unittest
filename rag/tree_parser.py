@@ -1,15 +1,10 @@
-"""
-Java代码解析器 - 使用tree-sitter
-"""
-
 from typing import List, Dict, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class CodeBlock:
-    """代码块"""
-    type: str  # method, field, constant, constructor
+    type: str
     signature: str
     code: str
     comment: str
@@ -20,7 +15,6 @@ class CodeBlock:
 
 @dataclass
 class ClassInfo:
-    """类信息"""
     name: str
     file: str
     package: str
@@ -30,275 +24,173 @@ class ClassInfo:
     constructors: List[Dict]
     methods: List[Dict]
     super_class: Optional[str] = None
-    interfaces: List[str] = None
-    
-    def __post_init__(self):
-        if self.interfaces is None:
-            self.interfaces = []
+    interfaces: List[str] = field(default_factory=list)
 
 
 class JavaParser:
-    """Java代码解析器"""
-    
     def __init__(self):
         try:
             from tree_sitter import Language, Parser
-            import tree_sitter_java as tsjava
-            self.parser = Parser(Language(tsjava.language()))
+            import tree_sitter_java
+            self.parser = Parser()
+            self.parser.language = Language(tree_sitter_java.language())
             self.available = True
         except ImportError:
             self.available = False
-    
-    def parse_file(self, file_path: str) -> Tuple[List[CodeBlock], Optional[ClassInfo]]:
-        """解析Java文件，返回代码块和类信息"""
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-        except:
-            return [], None
-        
+
+    def parse_file(self, path: str) -> Tuple[List[CodeBlock], Optional[ClassInfo]]:
         if not self.available:
             return [], None
-        
-        tree = self.parser.parse(bytes(content, 'utf8'))
-        return self._extract_from_tree(file_path, content, tree.root_node)
-    
-    def _extract_from_tree(self, file_path: str, content: str, root) -> Tuple[List[CodeBlock], Optional[ClassInfo]]:
-        """从AST树提取信息"""
-        blocks = []
-        class_info = None
-        
-        # 提取包名
-        package = self._get_package(root, content)
-        
-        # 提取导入
-        imports = self._get_imports(root, content)
-        
-        # 查找类定义
-        for node in root.children:
-            if node.type == 'class_declaration' or node.type == 'interface_declaration' or node.type == 'enum_declaration':
-                class_info = self._parse_class(node, content, file_path, package, imports)
-                blocks.extend(self._extract_blocks(node, content, file_path, class_info.name))
-                break
-        
-        return blocks, class_info
-    
-    def _get_package(self, root, content: str) -> str:
-        """提取包名"""
-        for node in root.children:
-            if node.type == 'package_declaration':
-                return self._get_text(node, content).replace('package ', '').replace(';', '').strip()
-        return ''
-    
-    def _get_imports(self, root, content: str) -> List[str]:
-        """提取导入语句"""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                code = f.read()
+        except OSError:
+            return [], None
+        tree = self.parser.parse(code.encode())
+        return self._walk(path, code, tree.root_node)
+
+    # ------------------------------------------------------------------ helpers
+
+    def _text(self, node, code: str) -> str:
+        return code[node.start_byte:node.end_byte]
+
+    def _child_text(self, node, code: str, *types) -> Optional[str]:
+        for ch in node.children:
+            if ch.type in types:
+                return self._text(ch, code)
+        return None
+
+    def _parse_package(self, node, code: str) -> str:
+        raw = self._text(node, code)
+        parts = raw.split()
+        if len(parts) >= 2:
+            return parts[1].rstrip(";")
+        return ""
+
+    # ------------------------------------------------------------------ walk
+
+    def _walk(self, filepath: str, code: str, root) -> Tuple[List[CodeBlock], Optional[ClassInfo]]:
+        pkg = ""
         imports = []
+        cls_node = None
         for node in root.children:
-            if node.type == 'import_declaration':
-                imports.append(self._get_text(node, content))
-        return imports
-    
-    def _parse_class(self, node, content: str, file_path: str, package: str, imports: List[str]) -> ClassInfo:
-        """解析类定义"""
-        class_name = ''
-        for child in node.children:
-            if child.type == 'identifier':
-                class_name = self._get_text(child, content)
-                break
-        
-        fields = []
-        constants = []
-        constructors = []
-        methods = []
+            if node.type == "package_declaration":
+                pkg = self._parse_package(node, code)
+            elif node.type == "import_declaration":
+                imports.append(self._text(node, code))
+            elif node.type in ("class_declaration", "interface_declaration", "enum_declaration"):
+                cls_node = node
+        if cls_node is None:
+            return [], None
+        return self._parse_class(filepath, code, pkg, imports, cls_node)
+
+    # ------------------------------------------------------------------ class
+
+    def _parse_class(self, filepath: str, code: str, pkg: str, imports: List[str], node):
+        name = self._child_text(node, code, "identifier") or ""
         super_class = None
         interfaces = []
-        
-        # 解析类体（class 或 enum）
-        for child in node.children:
-            if child.type == 'class_body':
-                for item in child.children:
-                    if item.type == 'field_declaration':
-                        field_info = self._parse_field(item, content)
-                        if field_info.get('is_constant'):
-                            constants.append(field_info)
-                        else:
-                            fields.append(field_info)
-                    elif item.type == 'constructor_declaration':
-                        constructors.append(self._parse_method(item, content))
-                    elif item.type == 'method_declaration':
-                        methods.append(self._parse_method(item, content))
-            elif child.type == 'enum_body':
-                # 解析 enum 常量
-                for item in child.children:
-                    if item.type == 'enum_constant':
-                        const_info = self._parse_enum_constant(item, content)
-                        if const_info:
-                            constants.append(const_info)
-                    elif item.type == 'field_declaration':
-                        field_info = self._parse_field(item, content)
-                        if field_info.get('is_constant'):
-                            constants.append(field_info)
-                        else:
-                            fields.append(field_info)
-                    elif item.type == 'method_declaration':
-                        methods.append(self._parse_method(item, content))
-            elif child.type == 'superclass':
-                for sub in child.children:
-                    if sub.type == 'type_identifier':
-                        super_class = self._get_text(sub, content)
-            elif child.type == 'interfaces':
-                for sub in child.children:
-                    if sub.type == 'type_list':
-                        for type_item in sub.children:
-                            if type_item.type == 'type_identifier':
-                                interfaces.append(self._get_text(type_item, content))
-        
-        return ClassInfo(
-            name=class_name,
-            file=file_path,
-            package=package,
-            imports=imports,
-            fields=fields,
-            constants=constants,
-            constructors=constructors,
-            methods=methods,
-            super_class=super_class,
-            interfaces=interfaces
-        )
-    
-    def _parse_field(self, node, content: str) -> Dict:
-        """解析字段"""
-        modifiers = []
-        field_type = ''
-        field_name = ''
-        
-        for child in node.children:
-            if child.type == 'modifiers':
-                modifiers = [self._get_text(m, content) for m in child.children]
-            elif child.type == 'type_identifier':
-                field_type = self._get_text(child, content)
-            elif child.type == 'variable_declarator':
-                for sub in child.children:
-                    if sub.type == 'identifier':
-                        field_name = self._get_text(sub, content)
-        
-        is_constant = 'static' in modifiers and 'final' in modifiers
-        
-        return {
-            'signature': f"{' '.join(modifiers)} {field_type} {field_name}" if modifiers else f"{field_type} {field_name}",
-            'name': field_name,
-            'type': field_type,
-            'modifiers': modifiers,
-            'is_constant': is_constant
-        }
-    
-    def _parse_enum_constant(self, node, content: str) -> Dict:
-        """解析枚举常量"""
-        name = ''
-        for child in node.children:
-            if child.type == 'identifier':
-                name = self._get_text(child, content)
-                break
-        
-        if not name:
-            return None
-        
-        return {
-            'signature': name,
-            'name': name,
-            'type': 'enum_constant',
-            'modifiers': ['public', 'static', 'final'],
-            'is_constant': True
-        }
-    
-    def _parse_method(self, node, content: str) -> Dict:
-        """解析方法或构造函数"""
-        modifiers = []
-        return_type = ''
-        method_name = ''
-        params = []
-        
-        for child in node.children:
-            if child.type == 'modifiers':
-                modifiers = [self._get_text(m, content) for m in child.children]
-            elif child.type == 'type_identifier':
-                return_type = self._get_text(child, content)
-            elif child.type == 'void_type':
-                return_type = 'void'
-            elif child.type == 'identifier':
-                method_name = self._get_text(child, content)
-            elif child.type == 'formal_parameters':
-                params = self._parse_params(child, content)
-        
-        signature = f"{' '.join(modifiers)} " if modifiers else ""
-        signature += f"{return_type} " if return_type else ""
-        signature += f"{method_name}({', '.join(params)})"
-        
-        return {
-            'signature': signature,
-            'name': method_name,
-            'return_type': return_type,
-            'params': params,
-            'modifiers': modifiers
-        }
-    
-    def _parse_params(self, node, content: str) -> List[str]:
-        """解析参数列表"""
-        params = []
-        for child in node.children:
-            if child.type == 'formal_parameter':
-                param_parts = []
-                for sub in child.children:
-                    if sub.type in ['type_identifier', 'array_type', 'generic_type']:
-                        param_parts.append(self._get_text(sub, content))
-                    elif sub.type == 'identifier':
-                        param_parts.append(self._get_text(sub, content))
-                if param_parts:
-                    params.append(' '.join(param_parts))
-        return params
-    
-    def _extract_blocks(self, class_node, content: str, file_path: str, class_name: str) -> List[CodeBlock]:
-        """提取代码块"""
+        fields, constants, constructors, methods = [], [], [], []
         blocks = []
-        
-        for child in class_node.children:
-            if child.type == 'class_body':
-                for item in child.children:
-                    if item.type == 'method_declaration':
-                        block = self._create_block(item, content, file_path, class_name, 'method')
-                        if block:
-                            blocks.append(block)
-                    elif item.type == 'constructor_declaration':
-                        block = self._create_block(item, content, file_path, class_name, 'constructor')
-                        if block:
-                            blocks.append(block)
-        
-        return blocks
-    
-    def _create_block(self, node, content: str, file_path: str, class_name: str, block_type: str) -> Optional[CodeBlock]:
-        """创建代码块"""
-        signature = ''
-        for child in node.children:
-            if child.type == 'identifier':
-                signature = self._get_text(child, content)
-                break
-        
-        if not signature:
-            return None
-        
-        start_line = node.start_point[0] + 1
-        code = self._get_text(node, content)
-        
-        return CodeBlock(
-            type=block_type,
-            signature=signature,
-            code=code,
-            comment='',
-            file=file_path,
-            class_name=class_name,
-            start_line=start_line
-        )
-    
-    def _get_text(self, node, content: str) -> str:
-        """获取节点的文本"""
-        return content[node.start_byte:node.end_byte]
+
+        for ch in node.children:
+            if ch.type == "superclass":
+                super_class = self._child_text(ch, code, "type_identifier")
+            elif ch.type == "super_interfaces":
+                interfaces = [self._text(x, code) for x in ch.children if x.type == "type_identifier"]
+            elif ch.type in ("class_body", "enum_body", "interface_body"):
+                for item in ch.children:
+                    if item.type == "field_declaration":
+                        fd = self._parse_field(item, code)
+                        if fd["is_constant"]:
+                            constants.append(fd)
+                        else:
+                            fields.append(fd)
+                    elif item.type == "enum_constant":
+                        ename = self._child_text(item, code, "identifier") or ""
+                        constants.append({
+                            "name": ename,
+                            "signature": ename,
+                            "type": "enum",
+                            "modifiers": [],
+                            "is_constant": True,
+                        })
+                    elif item.type == "constructor_declaration":
+                        m = self._parse_method(item, code)
+                        constructors.append(m)
+                        blocks.append(CodeBlock(
+                            "constructor", m["signature"], self._text(item, code),
+                            "", filepath, name, item.start_point[0] + 1,
+                        ))
+                    elif item.type in ("method_declaration", "interface_method_declaration"):
+                        m = self._parse_method(item, code)
+                        methods.append(m)
+                        blocks.append(CodeBlock(
+                            "method", m["signature"], self._text(item, code),
+                            "", filepath, name, item.start_point[0] + 1,
+                        ))
+
+        class_info = ClassInfo(name, filepath, pkg, imports, fields, constants, constructors, methods, super_class, interfaces)
+        return blocks, class_info
+
+    # ------------------------------------------------------------------ field
+
+    def _parse_field(self, node, code: str) -> Dict:
+        modifiers, typ, name = [], "", ""
+        for ch in node.children:
+            if ch.type == "modifiers":
+                modifiers = [self._text(m, code) for m in ch.children if m.type not in ("(", ")", ",")]
+            elif ch.type in ("type_identifier", "array_type", "generic_type", "integral_type", "floating_point_type"):
+                typ = self._text(ch, code)
+            elif ch.type == "variable_declarator":
+                name = self._child_text(ch, code, "identifier") or ""
+        is_constant = "static" in modifiers and "final" in modifiers
+        return {
+            "name": name,
+            "signature": self._text(node, code).rstrip(";").strip(),
+            "type": typ,
+            "modifiers": modifiers,
+            "is_constant": is_constant,
+        }
+
+    # ------------------------------------------------------------------ method
+
+    def _parse_param_type(self, param_node, code: str) -> str:
+        for ch in param_node.children:
+            if ch.type in ("type_identifier", "array_type", "generic_type", "integral_type",
+                           "floating_point_type", "boolean_type", "void_type"):
+                return self._text(ch, code)
+        return self._text(param_node, code)
+
+    def _parse_method(self, node, code: str) -> Dict:
+        modifiers, return_type, name, params = [], "", "", []
+        for ch in node.children:
+            if ch.type == "modifiers":
+                modifiers = [self._text(m, code) for m in ch.children if m.type not in ("(", ")", ",")]
+            elif ch.type == "void_type":
+                return_type = "void"
+            elif ch.type in ("type_identifier", "array_type", "generic_type", "integral_type", "floating_point_type"):
+                return_type = self._text(ch, code)
+            elif ch.type == "identifier":
+                name = self._text(ch, code)
+            elif ch.type == "formal_parameters":
+                params = [
+                    self._text(p, code)
+                    for p in ch.children
+                    if p.type in ("formal_parameter", "spread_parameter")
+                ]
+        mod_str = " ".join(modifiers)
+        param_str = ", ".join(params)
+        signature = f"{mod_str} {return_type} {name}({param_str})".strip()
+        param_types = [self._parse_param_type(p, code) for p in node.children
+                       if p.type == "formal_parameters"
+                       for p in p.children
+                       if p.type in ("formal_parameter", "spread_parameter")]
+        return {
+            "signature": signature,
+            "name": name,
+            "return_type": return_type,
+            "params": params,
+            "param_types": param_types,
+            "modifiers": modifiers,
+        }
