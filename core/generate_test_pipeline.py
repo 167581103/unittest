@@ -22,11 +22,11 @@ from evaluation.evaluator import TestEvaluator, print_report
 
 # ============ 配置 ============
 
-PROJECT_DIR = "/home/juu/unittest/data/project/gson/gson/src/main/java"
-TEST_DIR = "/home/juu/unittest/data/project/gson/gson/src/test/java"
-MAVEN_PROJECT_DIR = "/home/juu/unittest/data/project/gson"
+PROJECT_DIR = "/data/workspace/unittest/data/project/gson/gson/src/main/java"
+TEST_DIR = "/data/workspace/unittest/data/project/gson/gson/src/test/java"
+MAVEN_PROJECT_DIR = "/data/workspace/unittest/data/project/gson"
 INDEX_PATH = "/tmp/gson_code_rag.index"
-JACOCO_HOME = "/home/juu/unittest/lib/jacoco-0.8.14"
+JACOCO_HOME = "/data/workspace/unittest/lib"
 OUTPUT_DIR = "/tmp/generated_tests"
 REPORT_DIR = "/tmp/test_reports"
 

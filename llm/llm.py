@@ -1,19 +1,17 @@
 """
-LLM模块 - 聊天、嵌入、测试生成
+LLM模块 - 聊天、嵌入、测试生成（统一使用OpenAI客户端）
 """
 
 import os
 import re
-import asyncio
 import time
 from typing import List, Dict
 from pathlib import Path
 
 import yaml
-from litellm import acompletion
 from openai import OpenAI
 
-# ============ 配置 ============
+# ============ 配置 ============b
 
 
 def _load_config():
@@ -42,21 +40,38 @@ def _load_prompts():
 CONFIG = _load_config()
 PROMPTS = _load_prompts()
 
+# 统一的OpenAI客户端
+_chat_client = None
+_embed_client = None
+
+
+def _get_chat_client():
+    global _chat_client
+    if _chat_client is None:
+        _chat_client = OpenAI(
+            api_key=CONFIG["api_key"],
+            base_url=CONFIG["base_url"]
+        )
+    return _chat_client
+
+
+def _get_embed_client():
+    global _embed_client
+    if _embed_client is None:
+        _embed_client = OpenAI(
+            api_key=CONFIG["embedding_api_key"],
+            base_url=CONFIG["embedding_base_url"]
+        )
+    return _embed_client
+
 
 # ============ 嵌入 ============
 
 
 def embed(texts: List[str], retries: int = 3) -> List[List[float]]:
     """获取嵌入向量"""
-    client = OpenAI(
-        api_key=CONFIG["embedding_api_key"],
-        base_url=CONFIG["embedding_base_url"]
-    )
-    
-    # 提取模型名称（去掉 openai/ 前缀）
+    client = _get_embed_client()
     model = CONFIG["embedding_model"]
-    if model.startswith("openai/"):
-        model = model[7:]
     
     for i in range(retries):
         try:
@@ -76,22 +91,19 @@ def embed(texts: List[str], retries: int = 3) -> List[List[float]]:
 
 
 async def chat(prompt: str, system: str = None, **kw) -> str:
-    """与LLM对话"""
+    """与LLM对话（异步接口，内部使用同步客户端）"""
+    client = _get_chat_client()
+    
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
     msgs.append({"role": "user", "content": prompt})
 
-    params = {
-        "model": CONFIG["model"],
-        "messages": msgs,
-        "api_key": CONFIG["api_key"],
-        **kw,
-    }
-    if CONFIG["base_url"]:
-        params["base_url"] = CONFIG["base_url"]
-
-    resp = await acompletion(**params)
+    resp = client.chat.completions.create(
+        model=CONFIG["model"],
+        messages=msgs,
+        **kw
+    )
     return resp.choices[0].message.content
 
 
@@ -164,3 +176,22 @@ async def generate_test(
         return {"success": True, "output_path": output_path}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ============ 批量生成 ============
+
+
+async def batch_generate(tasks: List[Dict]) -> List[Dict]:
+    """批量生成测试
+    
+    Args:
+        tasks: 任务列表，每个任务包含 generate_test 的参数
+    
+    Returns:
+        结果列表
+    """
+    results = []
+    for task in tasks:
+        result = await generate_test(**task)
+        results.append(result)
+    return results

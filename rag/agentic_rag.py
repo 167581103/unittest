@@ -6,7 +6,7 @@ Agentic RAG - LLM驱动智能检索
 
 import json
 import re
-from typing import Dict, List
+from typing import Dict, List, Tuple, Optional
 
 from .code_rag import CodeRAG
 
@@ -134,6 +134,14 @@ class AgenticRAG:
             
             if info.constructors:
                 parts.append("\n### Constructors\n" + "\n".join(f"- {c['signature']}" for c in info.constructors[:3]))
+            
+            # ★ 新增：列出所有公共方法，防止LLM幻想不存在的API
+            if info.methods:
+                public_methods = [m for m in info.methods if 'public' in m.get('signature', '')]
+                if public_methods:
+                    method_list = [m.get('signature', '').split('(')[0].split()[-1] for m in public_methods[:20]]
+                    parts.append("\n### Available Public Methods (ONLY use these)\n" + 
+                                ", ".join(method_list))
 
         # 4. 依赖方法
         for name in deps.get("methods", [])[:6]:

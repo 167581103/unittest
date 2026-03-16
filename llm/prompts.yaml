@@ -15,6 +15,11 @@ test_system: |
   6. 测试类名必须是：{test_class_name}
   7. 避免空测试方法，每个@Test都要有实质内容
   8. 根据方法签名和上下文正确使用相关的公共API
+  
+  ⚠️ 严禁使用上下文中未列出的方法！
+  - 只能使用 "Available Public Methods" 中列出的方法
+  - 禁止幻想或猜测任何未在上下文中出现的API
+  - 严格遵守被测类的实际公共API，不要根据经验假设方法存在
 
   {context}
 
@@ -30,6 +35,7 @@ test_user: |
   - 导入被测类：{full_class_name}
   - 类名为：{test_class_name}
   - 每个测试方法都有实际的测试逻辑和断言
+  - 只使用上下文中 "Available Public Methods" 列出的方法
 
 # 依赖分析（Agentic RAG）
 deps_analysis: |
