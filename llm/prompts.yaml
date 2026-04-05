@@ -15,6 +15,7 @@ test_system: |
   6. 测试类名必须是：{test_class_name}
   7. 避免空测试方法，每个@Test都要有实质内容
   8. 根据方法签名和上下文正确使用相关的公共API
+  9. 文件第一行必须是正确的package声明：package {package_name};
   
   ⚠️ 严禁使用上下文中未列出的方法！
   - 只能使用 "Available Public Methods" 中列出的方法
@@ -32,6 +33,7 @@ test_user: |
   ```
 
   生成完整的JUnit测试类 {test_class_name}。确保：
+  - 第一行必须是：package {package_name};
   - 导入被测类：{full_class_name}
   - 类名为：{test_class_name}
   - 每个测试方法都有实际的测试逻辑和断言

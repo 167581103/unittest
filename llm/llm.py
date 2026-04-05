@@ -194,6 +194,7 @@ async def generate_test(
     context: str = "",
     test_class_name: str = None,
     full_class_name: str = None,
+    package_name: str = None,
 ) -> Dict:
     """生成单元测试
     
@@ -207,10 +208,15 @@ async def generate_test(
         full_class_name: 被测类完整包名（如 com.google.gson.stream.JsonReader），用于import
     """
     test_class_name = test_class_name or f"{class_name}Test"
+    # Derive package from full_class_name if not provided
+    if package_name is None and full_class_name and "." in full_class_name:
+        package_name = ".".join(full_class_name.split(".")[:-1])
+    package_name = package_name or ""
     system = PROMPTS["test_system"].format(
-        class_name=class_name, 
+        class_name=class_name,
         test_class_name=test_class_name,
         full_class_name=full_class_name or class_name,
+        package_name=package_name,
         context=context or "无上下文"
     )
     prompt = PROMPTS["test_user"].format(
@@ -219,10 +225,11 @@ async def generate_test(
         method_signature=method_signature,
         method_code=method_code,
         full_class_name=full_class_name or class_name,
+        package_name=package_name,
     )
 
     try:
-        resp = await chat(prompt, system, temperature=0.7, max_tokens=2000)
+        resp = await chat(prompt, system, temperature=0.7, max_tokens=4000)
         code = _extract_code(resp)
         code = _fix_imports(code)
 

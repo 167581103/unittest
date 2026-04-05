@@ -274,10 +274,13 @@ async def run_pipeline(req: RunRequest):
         # Build the prompts that will be sent to LLM (for display)
         method_name = req.method_signature.split("(")[0].split()[-1] if "(" in req.method_signature else req.target_class
         test_class_name = f"{req.target_class}_{method_name}_Test"
+        # Derive package_name from full_class_name
+        package_name = ".".join(req.full_class_name.split(".")[:-1]) if "." in req.full_class_name else ""
         system_prompt = PROMPTS["test_system"].format(
             class_name=req.target_class,
             test_class_name=test_class_name,
             full_class_name=req.full_class_name,
+            package_name=package_name,
             context=context or "No context",
         )
         user_prompt = PROMPTS["test_user"].format(
@@ -286,6 +289,7 @@ async def run_pipeline(req: RunRequest):
             method_signature=req.method_signature,
             method_code=req.method_code,
             full_class_name=req.full_class_name,
+            package_name=package_name,
         )
 
         await state.log("generate", "prompts", {

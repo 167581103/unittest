@@ -34,6 +34,8 @@ class MethodCoverage:
     branch_coverage: float
     covered_lines: int
     total_lines: int
+    covered_branches: int = 0
+    total_branches: int = 0
 
 
 @dataclass
@@ -52,11 +54,28 @@ class CoverageReport:
             self.method_coverages = []
     
     def get_method_coverage(self, method_name: str) -> Optional[MethodCoverage]:
-        """获取指定方法的覆盖率"""
-        for mc in self.method_coverages:
-            if mc.method_name == method_name:
-                return mc
-        return None
+        """获取指定方法的覆盖率（聚合所有同名重载方法）"""
+        matches = [mc for mc in self.method_coverages if mc.method_name == method_name]
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+        # Aggregate all overloads: sum covered/total lines and branches
+        total_covered = sum(mc.covered_lines for mc in matches)
+        total_lines = sum(mc.total_lines for mc in matches)
+        total_covered_branches = sum(mc.covered_branches for mc in matches)
+        total_branches = sum(mc.total_branches for mc in matches)
+        line_cov = (total_covered / total_lines * 100) if total_lines > 0 else 0.0
+        branch_cov = (total_covered_branches / total_branches * 100) if total_branches > 0 else 0.0
+        return MethodCoverage(
+            method_name=method_name,
+            line_coverage=line_cov,
+            branch_coverage=branch_cov,
+            covered_lines=total_covered,
+            total_lines=total_lines,
+            covered_branches=total_covered_branches,
+            total_branches=total_branches,
+        )
 
 
 @dataclass
@@ -118,6 +137,10 @@ class TestEvaluator:
             class_name = target_class.split(".")[-1]
             baseline_test = f"{class_name}Test"
         
+    # 0. 先清理所有残留的 Generated 测试文件，确保环境干净
+        print(f"[→] 清理残留的 Generated 测试文件...")
+        self._cleanup_old_generated_tests()
+
         # 1. 获取基准覆盖率
         baseline_coverage = self.get_baseline_coverage(target_class, baseline_test)
         
@@ -317,12 +340,18 @@ class TestEvaluator:
             ]
         
         try:
+            # Set Java 17 and Maven environment (same as get_baseline_coverage)
+            env = os.environ.copy()
+            env["JAVA_HOME"] = "/usr/lib/jvm/java-17-openjdk"
+            env["PATH"] = f"/usr/lib/jvm/java-17-openjdk/bin:/opt/maven-new/bin:{env.get('PATH', '')}"
+            env["M2_HOME"] = "/opt/maven-new"
             result = subprocess.run(
                 cmd,
                 cwd=project_root,
                 capture_output=True,
                 text=True,
-                timeout=180
+                timeout=180,
+                env=env,
             )
             success = result.returncode == 0
             if not success:
@@ -380,6 +409,9 @@ class TestEvaluator:
         jacoco_agent = f"-javaagent:{self.jacoco_home}/lib/jacocoagent.jar=destfile={self.exec_file}"
         env = os.environ.copy()
         env["JAVA_TOOL_OPTIONS"] = jacoco_agent
+        env["JAVA_HOME"] = "/usr/lib/jvm/java-17-openjdk"
+        env["PATH"] = f"/usr/lib/jvm/java-17-openjdk/bin:/opt/maven-new/bin:{env.get('PATH', '')}"
+        env["M2_HOME"] = "/opt/maven-new"
         
         if os.path.exists(gson_module_path):
             cmd = [
@@ -387,18 +419,27 @@ class TestEvaluator:
                 "-pl", "gson",
                 "-am",
                 f"-Dtest={test_pattern}",
-                "-Dmaven.compiler.failOnWarning=false"
+                "-Dmaven.compiler.failOnWarning=false",
+                "-Dmaven.test.failure.ignore=true",  # Don't abort on test assertion failures
             ]
         else:
-            cmd = ["mvn", "test", f"-Dtest={test_pattern}", "-Dmaven.compiler.failOnWarning=false"]
+            cmd = ["mvn", "test", f"-Dtest={test_pattern}",
+                   "-Dmaven.compiler.failOnWarning=false",
+                   "-Dmaven.test.failure.ignore=true"]
         
         try:
-            result = subprocess.run(cmd, cwd=project_root, text=True, timeout=120, env=env)
+            result = subprocess.run(cmd, cwd=project_root, text=True, timeout=120, env=env,
+                                    capture_output=True)
             
             if result.returncode == 0:
                 print(f"  ✓ 测试运行完成")
             else:
                 print(f"  ✗ 测试运行失败 (返回码: {result.returncode})")
+                # Print key lines for diagnosis
+                combined = result.stdout + result.stderr
+                for line in combined.split('\n'):
+                    if any(kw in line for kw in ['ERROR', 'FAILURE', 'Tests run', 'BUILD']):
+                        print(f"    {line.strip()}")
             
         except subprocess.TimeoutExpired:
             print(f"  ✗ 测试运行超时")
@@ -504,11 +545,17 @@ class TestEvaluator:
         
         try:
             # 不使用 capture_output，让 Maven 输出显示出来以便诊断问题
-            result = subprocess.run(cmd, cwd=project_root, timeout=180, env=env)
+            result = subprocess.run(cmd, cwd=project_root, timeout=180, env=env,
+                                       capture_output=True, text=True)
             
             # 检查 Maven 返回码
             if result.returncode != 0:
                 print(f"  ✗ Maven 构建失败，返回码: {result.returncode}")
+                # 输出关键错误信息帮助诊断
+                combined = result.stdout + result.stderr
+                for line in combined.split('\n'):
+                    if any(kw in line for kw in ['ERROR', 'FAILURE', 'error:', 'cannot find', 'does not exist']):
+                        print(f"    {line.strip()}")
                 return None
             
             if not os.path.exists(baseline_exec):
@@ -616,7 +663,9 @@ class TestEvaluator:
                                     line_coverage=(m_line_covered / m_total_lines * 100) if m_total_lines > 0 else 0,
                                     branch_coverage=(m_branch_covered / m_total_branches * 100) if m_total_branches > 0 else 0,
                                     covered_lines=m_line_covered,
-                                    total_lines=m_total_lines
+                                    total_lines=m_total_lines,
+                                    covered_branches=m_branch_covered,
+                                    total_branches=m_total_branches,
                                 ))
                         
                         return CoverageReport(

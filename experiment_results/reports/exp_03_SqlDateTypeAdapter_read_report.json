@@ -1,0 +1,30 @@
+{
+  "id": "exp_03",
+  "class_name": "SqlDateTypeAdapter",
+  "full_class_name": "com.google.gson.internal.sql.SqlDateTypeAdapter",
+  "method_name": "read",
+  "timestamp": "2026-03-17T20:30:58.777051",
+  "compilation_success": false,
+  "baseline_coverage": {
+    "line_coverage": 87.5,
+    "branch_coverage": 100.0,
+    "method_coverage": 100.0,
+    "covered_lines": 21,
+    "total_lines": 24,
+    "target_method_coverage": {
+      "method_name": "read",
+      "line_coverage": 75.0,
+      "branch_coverage": 100.0,
+      "covered_lines": 9,
+      "total_lines": 12,
+      "covered_branches": 2,
+      "total_branches": 2
+    }
+  },
+  "new_coverage": null,
+  "coverage_improvement": null,
+  "success": false,
+  "errors": [
+    "编译失败"
+  ]
+}
