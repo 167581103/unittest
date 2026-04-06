@@ -1,26 +1,143 @@
 # LLM 提示词配置
 
-# 单元测试生成
-test_system: |
-  你是Java单元测试专家。生成高质量的JUnit 4测试。
+# ============ Phase 1: Method Understanding ============
+
+# Step 1: Understand what the method does
+method_understanding: |
+  你是一位资深Java开发工程师。请仔细阅读以下Java方法的源代码，给出清晰、准确的功能解读。
+
+  被测类: {full_class_name}
+  方法签名: {method_signature}
+  
+  源代码:
+  ```java
+  {method_code}
+  ```
+
+  相关上下文（类结构、依赖方法等）:
+  {context}
+
+  请从以下几个维度进行分析：
+  1. **功能概述**：用一段话概括这个方法的核心功能和职责
+  2. **输入输出**：描述方法的参数含义、返回值含义、可能抛出的异常
+  3. **核心逻辑**：列出方法内部的关键处理步骤和分支逻辑
+  4. **状态变更**：方法执行后会修改哪些对象状态（字段、参数等）
+  5. **依赖关系**：方法依赖了哪些外部方法/字段/类型
+
+  请用中文回答，条理清晰。
+
+# Step 2: Analyze test coverage points
+coverage_analysis: |
+  你是一位测试架构师。基于以下方法的功能解读，分析需要覆盖的测试点和测试面。
+
+  被测类: {full_class_name}
+  方法签名: {method_signature}
+  
+  源代码:
+  ```java
+  {method_code}
+  ```
+
+  方法功能解读:
+  {method_understanding}
+
+  相关上下文:
+  {context}
+
+  请从以下维度全面分析需要覆盖的测试点：
+
+  1. **正常流程覆盖**：列出所有正常执行路径，每条路径需要什么输入条件
+  2. **分支覆盖**：列出代码中所有 if/else/switch 分支，每个分支的触发条件
+  3. **边界条件**：列出所有边界值场景（空值、极值、临界值等）
+  4. **异常路径**：列出所有可能抛出异常的场景和异常类型
+  5. **状态依赖**：列出方法行为依赖的前置状态条件
+  6. **覆盖优先级**：按重要性对测试点排序（高/中/低）
+
+  请用中文回答，每个测试点都要具体、可操作。
+
+# Step 3: Design test cases
+test_case_design: |
+  你是一位测试用例设计专家。基于以下方法的功能解读和覆盖分析，设计具体的测试用例。
+
+  被测类: {full_class_name}
+  方法签名: {method_signature}
+  
+  源代码:
+  ```java
+  {method_code}
+  ```
+
+  方法功能解读:
+  {method_understanding}
+
+  覆盖分析:
+  {coverage_analysis}
+
+  相关上下文（可用的公共API）:
+  {context}
+
+  请设计完整的测试用例列表，每个用例包含：
+
+  返回严格的JSON数组格式：
+  ```json
+  [
+    {{
+      "id": "TC01",
+      "name": "test_描述性名称",
+      "description": "测试目的描述",
+      "category": "normal|boundary|exception|state",
+      "priority": "high|medium|low",
+      "setup": "前置条件和对象构造方式",
+      "input": "具体的输入数据/操作步骤",
+      "expected_output": "预期的返回值或行为",
+      "assertion_type": "assertEquals|assertTrue|assertThrows|...",
+      "coverage_target": "覆盖的代码行/分支描述"
+    }}
+  ]
+  ```
 
   要求：
-  1. 针对方法功能设计有意义的测试用例
-  2. 覆盖正常流程、边界条件、异常情况
-  3. 每个测试方法都要有明确的断言来验证行为
-  4. 包含所有必要的import语句，特别是：
+  1. 测试用例数量在 5-12 个之间，确保覆盖所有关键路径
+  2. 每个用例的 name 必须是合法的Java方法名（以test开头，使用驼峰命名）
+  3. setup 和 input 要足够具体，能直接转化为代码
+  4. 只使用上下文中 "Available Public Methods" 列出的公共API
+  5. 优先覆盖高优先级的测试点
+  6. ⚠️ 严禁使用上下文中未列出的方法，不要猜测API
+  7. ⚠️ 如果上下文中有 "VISIBILITY WARNING"，说明所有字段都是 private 的
+     - setup 中必须通过公共构造函数和公共方法来构造测试状态
+     - 例如：通过 new JsonReader(new StringReader(jsonString)) 构造输入
+     - 然后通过 beginArray()/beginObject() 等公共方法导航到正确位置
+     - 绝对不要在 setup 中使用反射、Mock子类或直接设置私有字段
+  8. 如果上下文中有 "Existing Test Patterns"，请参考其中的测试模式来设计 setup 和 input
+
+# ============ Phase 2: Test Code Generation ============
+
+# Unit test generation (enhanced with test case design)
+test_system: |
+  你是Java单元测试专家。根据预先设计好的测试用例，生成高质量的JUnit 4测试代码。
+
+  要求：
+  1. **严格按照测试用例设计实现**，每个测试用例对应一个@Test方法
+  2. 每个测试方法都要有明确的断言来验证行为
+  3. 包含所有必要的import语句，特别是：
      - 被测类：{full_class_name}
      - java.io.EOFException（如涉及流操作）
-  5. 只使用公共API，不访问私有成员
-  6. 测试类名必须是：{test_class_name}
-  7. 避免空测试方法，每个@Test都要有实质内容
-  8. 根据方法签名和上下文正确使用相关的公共API
-  9. 文件第一行必须是正确的package声明：package {package_name};
+  4. 只使用公共API，不访问私有成员
+  5. 测试类名必须是：{test_class_name}
+  6. 避免空测试方法，每个@Test都要有实质内容
+  7. 根据方法签名和上下文正确使用相关的公共API
+  8. 文件第一行必须是正确的package声明：package {package_name};
   
   ⚠️ 严禁使用上下文中未列出的方法！
   - 只能使用 "Available Public Methods" 中列出的方法
   - 禁止幻想或猜测任何未在上下文中出现的API
   - 严格遵守被测类的实际公共API，不要根据经验假设方法存在
+
+  ⚠️ 严禁创建 Mock 子类或使用反射访问私有字段！
+  - 不要创建继承被测类的 Mock/Stub 内部类
+  - 不要通过反射设置 private 字段（如 peeked, buffer, pos 等）
+  - 正确做法：通过构造函数传入合适的输入数据（如 JSON 字符串），然后通过公共API导航到目标状态
+  - 如果上下文中有 "Existing Test Patterns" 部分，请严格参照其中的代码模式来编写测试
 
   {context}
 
@@ -32,12 +149,19 @@ test_user: |
   {method_code}
   ```
 
-  生成完整的JUnit测试类 {test_class_name}。确保：
+  测试用例设计:
+  {test_cases}
+
+  请严格按照上述测试用例设计，生成完整的JUnit测试类 {test_class_name}。确保：
   - 第一行必须是：package {package_name};
   - 导入被测类：{full_class_name}
   - 类名为：{test_class_name}
+  - 每个测试用例对应一个@Test方法，方法名与用例的name字段一致
   - 每个测试方法都有实际的测试逻辑和断言
   - 只使用上下文中 "Available Public Methods" 列出的方法
+  - 按照用例的 setup、input、expected_output 和 assertion_type 来实现
+
+# ============ Agentic RAG ============
 
 # 依赖分析（Agentic RAG）
 deps_analysis: |

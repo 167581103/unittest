@@ -16,7 +16,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from rag import CodeRAG, AgenticRAG
-from llm import generate_test
+from llm import generate_test, analyze_method
 from evaluation.evaluator import TestEvaluator, print_report
 
 # ============ Config ============
@@ -275,6 +275,31 @@ TARGET_METHODS = [
 ]
 
 
+# ============ Helpers ============
+
+def _cov_dict(cov, method_name):
+    """Convert a CoverageReport to a serializable dict with target method info."""
+    if cov is None:
+        return None
+    mc = cov.get_method_coverage(method_name)
+    d = {
+        "line_coverage": cov.line_coverage,
+        "branch_coverage": cov.branch_coverage,
+        "method_coverage": cov.method_coverage,
+        "covered_lines": cov.covered_lines,
+        "total_lines": cov.total_lines,
+    }
+    if mc:
+        d["target_method_coverage"] = {
+            "method_name": method_name,
+            "line_coverage": mc.line_coverage,
+            "branch_coverage": mc.branch_coverage,
+            "covered_lines": mc.covered_lines,
+            "total_lines": mc.total_lines,
+        }
+    return d
+
+
 # ============ Pipeline ============
 
 async def run_single_experiment(target: dict, evaluator: TestEvaluator) -> dict:
@@ -326,10 +351,32 @@ async def run_single_experiment(target: dict, evaluator: TestEvaluator) -> dict:
         )
         print(f"  OK Context retrieved: {len(context)} chars")
 
-        # Step 3: Generate test (baseline is measured inside evaluate())
+        # Step 3: LLM method analysis & test case design
+        print(f"[->] LLM method analysis & test case design...")
+        analysis = await analyze_method(
+            class_name=class_name,
+            method_signature=method_sig,
+            method_code=target["method_code"],
+            context=context,
+            full_class_name=target["full_class_name"],
+        )
+        print(f"  OK Method understanding: {len(analysis['method_understanding'])} chars")
+        print(f"  OK Coverage analysis: {len(analysis['coverage_analysis'])} chars")
+        print(f"  OK Test cases designed: {len(analysis['test_cases'])} cases")
+        for tc in analysis["test_cases"]:
+            print(f"    - [{tc.get('id', '?')}] {tc.get('name', '?')}: {tc.get('description', '')}")
+
+        result["analysis"] = {
+            "method_understanding": analysis["method_understanding"][:500] + "..." if len(analysis["method_understanding"]) > 500 else analysis["method_understanding"],
+            "coverage_analysis": analysis["coverage_analysis"][:500] + "..." if len(analysis["coverage_analysis"]) > 500 else analysis["coverage_analysis"],
+            "test_cases_count": len(analysis["test_cases"]),
+            "test_cases": analysis["test_cases"],
+        }
+
+        # Step 4: Generate test based on test case design
         test_class_name = f"{class_name}_{method_name}_Test"
         test_file = os.path.join(GENERATED_TESTS_DIR, f"{test_class_name}.java")
-        print(f"[->] Generating test: {test_class_name}")
+        print(f"[->] Generating test based on {len(analysis['test_cases'])} designed cases: {test_class_name}")
         gen_result = await generate_test(
             class_name=class_name,
             method_signature=method_sig,
@@ -338,7 +385,8 @@ async def run_single_experiment(target: dict, evaluator: TestEvaluator) -> dict:
             context=context,
             test_class_name=test_class_name,
             full_class_name=target["full_class_name"],
-            package_name=target["package"],  # Ensure package declaration is generated
+            package_name=target["package"],
+            test_cases=analysis["test_cases"],
         )
 
         if not gen_result["success"]:
@@ -362,68 +410,32 @@ async def run_single_experiment(target: dict, evaluator: TestEvaluator) -> dict:
 
         result["compilation_success"] = report.compilation_success
 
-        # Use baseline_coverage from report (evaluate() handles cleanup + baseline internally)
+        # Collect coverage data using helper
         effective_baseline = report.baseline_coverage
-        if effective_baseline:
-            baseline_method_cov = effective_baseline.get_method_coverage(method_name)
-            result["baseline_coverage"] = {
-                "line_coverage": effective_baseline.line_coverage,
-                "branch_coverage": effective_baseline.branch_coverage,
-                "method_coverage": effective_baseline.method_coverage,
-                "covered_lines": effective_baseline.covered_lines,
-                "total_lines": effective_baseline.total_lines,
-                "target_method_coverage": {
-                    "method_name": method_name,
-                    "line_coverage": baseline_method_cov.line_coverage if baseline_method_cov else None,
-                    "branch_coverage": baseline_method_cov.branch_coverage if baseline_method_cov else None,
-                    "covered_lines": baseline_method_cov.covered_lines if baseline_method_cov else None,
-                    "total_lines": baseline_method_cov.total_lines if baseline_method_cov else None,
-                } if baseline_method_cov else None,
-            }
-            print(f"  OK Baseline: line={effective_baseline.line_coverage:.1f}%, branch={effective_baseline.branch_coverage:.1f}%")
-            if baseline_method_cov:
-                print(f"  OK Baseline [{method_name}]: line={baseline_method_cov.line_coverage:.1f}%, branch={baseline_method_cov.branch_coverage:.1f}%")
+        result["baseline_coverage"] = _cov_dict(effective_baseline, method_name)
+        result["new_coverage"] = _cov_dict(report.coverage, method_name)
 
-        if report.coverage:
-            # Extract target method coverage from new coverage
-            new_method_cov = report.coverage.get_method_coverage(method_name)
-            result["new_coverage"] = {
-                "line_coverage": report.coverage.line_coverage,
-                "branch_coverage": report.coverage.branch_coverage,
-                "method_coverage": report.coverage.method_coverage,
-                "covered_lines": report.coverage.covered_lines,
-                "total_lines": report.coverage.total_lines,
-                "target_method_coverage": {
-                    "method_name": method_name,
-                    "line_coverage": new_method_cov.line_coverage if new_method_cov else None,
-                    "branch_coverage": new_method_cov.branch_coverage if new_method_cov else None,
-                    "covered_lines": new_method_cov.covered_lines if new_method_cov else None,
-                    "total_lines": new_method_cov.total_lines if new_method_cov else None,
-                } if new_method_cov else None,
-            }
+        if effective_baseline:
+            print(f"  OK Baseline: line={effective_baseline.line_coverage:.1f}%, branch={effective_baseline.branch_coverage:.1f}%")
 
         if effective_baseline and report.coverage:
-            eff_method_cov = effective_baseline.get_method_coverage(method_name)
-            new_method_cov2 = report.coverage.get_method_coverage(method_name)
-            method_line_delta = None
-            method_branch_delta = None
-            if eff_method_cov and new_method_cov2:
-                method_line_delta = new_method_cov2.line_coverage - eff_method_cov.line_coverage
-                method_branch_delta = new_method_cov2.branch_coverage - eff_method_cov.branch_coverage
+            bmc = effective_baseline.get_method_coverage(method_name)
+            nmc = report.coverage.get_method_coverage(method_name)
             result["coverage_improvement"] = {
                 "line_coverage_delta": report.coverage.line_coverage - effective_baseline.line_coverage,
                 "branch_coverage_delta": report.coverage.branch_coverage - effective_baseline.branch_coverage,
                 "covered_lines_delta": report.coverage.covered_lines - effective_baseline.covered_lines,
-                "target_method_line_delta": method_line_delta,
-                "target_method_branch_delta": method_branch_delta,
+                "target_method_line_delta": (nmc.line_coverage - bmc.line_coverage) if (nmc and bmc) else None,
+                "target_method_branch_delta": (nmc.branch_coverage - bmc.branch_coverage) if (nmc and bmc) else None,
             }
-            print(f"\n  Coverage improvement (class level):")
-            print(f"    Line:   {effective_baseline.line_coverage:.1f}% -> {report.coverage.line_coverage:.1f}%  ({result['coverage_improvement']['line_coverage_delta']:+.1f}%)")
-            print(f"    Branch: {effective_baseline.branch_coverage:.1f}% -> {report.coverage.branch_coverage:.1f}%  ({result['coverage_improvement']['branch_coverage_delta']:+.1f}%)")
-            if method_line_delta is not None:
+            imp = result["coverage_improvement"]
+            print(f"\n  Coverage improvement (class):")
+            print(f"    Line:   {effective_baseline.line_coverage:.1f}% -> {report.coverage.line_coverage:.1f}%  ({imp['line_coverage_delta']:+.1f}%)")
+            print(f"    Branch: {effective_baseline.branch_coverage:.1f}% -> {report.coverage.branch_coverage:.1f}%  ({imp['branch_coverage_delta']:+.1f}%)")
+            if imp["target_method_line_delta"] is not None:
                 print(f"  Coverage improvement (method [{method_name}]):")
-                print(f"    Line:   {eff_method_cov.line_coverage:.1f}% -> {new_method_cov2.line_coverage:.1f}%  ({method_line_delta:+.1f}%)")
-                print(f"    Branch: {eff_method_cov.branch_coverage:.1f}% -> {new_method_cov2.branch_coverage:.1f}%  ({method_branch_delta:+.1f}%)")
+                print(f"    Line:   {bmc.line_coverage:.1f}% -> {nmc.line_coverage:.1f}%  ({imp['target_method_line_delta']:+.1f}%)")
+                print(f"    Branch: {bmc.branch_coverage:.1f}% -> {nmc.branch_coverage:.1f}%  ({imp['target_method_branch_delta']:+.1f}%)")
 
         # Step 5: Save individual report
         report_file = os.path.join(REPORTS_DIR, f"{exp_id}_{class_name}_{method_name}_report.json")
@@ -515,5 +527,3 @@ async def run_all_experiments():
 
 if __name__ == "__main__":
     asyncio.run(run_all_experiments())
-
-# ============ Pipeline ============

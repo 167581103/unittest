@@ -5,6 +5,7 @@ Pipeline: LLM dependency analysis -> static analysis augmentation -> multi-strat
 """
 
 import json
+import os
 import re
 import hashlib
 from typing import Dict, List, Tuple, Optional, Set
@@ -52,6 +53,10 @@ class AgenticRAG:
         self.verbose = verbose
         # Simple in-memory cache: code_hash -> deps dict
         self._deps_cache: Dict[str, Dict[str, List[str]]] = {}
+        # Cache for test exemplars
+        self._test_exemplar_cache: Dict[str, str] = {}
+        # Cache for detected test framework info
+        self._test_framework_cache: Optional[Dict[str, str]] = None
 
     # ------------------------------------------------------------------
     # Logging
@@ -260,7 +265,7 @@ class AgenticRAG:
     # ------------------------------------------------------------------
 
     def _build_class_section(self, cls: str, deps: Dict[str, List[str]]) -> List[str]:
-        """Build the primary class structure section."""
+        """Build the primary class structure section with visibility annotations."""
         info = self.rag.class_info.get(cls)
         if not info:
             return []
@@ -273,9 +278,10 @@ class AgenticRAG:
                 "\n".join(f"import {i};" for i in info.imports[:15])
             )
 
+        # Determine if all fields/constants are private (common in well-encapsulated classes)
+        all_fields_private = True
         if info.fields:
             needed = set(deps.get("fields", []))
-            # Include all fields if no specific ones requested, else filter
             fields = (
                 [f for f in info.fields if any(n in f.get("name", "") for n in needed)]
                 if needed else info.fields
@@ -285,11 +291,31 @@ class AgenticRAG:
                     "\n### Fields\n" +
                     "\n".join(f"  - {f['signature']}" for f in fields[:10])
                 )
+                # Check visibility
+                for f in fields:
+                    sig = f.get('signature', '')
+                    if 'public' in sig or 'protected' in sig:
+                        all_fields_private = False
 
         if info.constants:
             parts.append(
                 "\n### Constants\n" +
                 "\n".join(f"  - {c['signature']}" for c in info.constants[:15])
+            )
+            for c in info.constants:
+                sig = c.get('signature', '')
+                if 'public' in sig or 'protected' in sig:
+                    all_fields_private = False
+
+        # Add visibility warning
+        if all_fields_private and (info.fields or info.constants):
+            parts.append(
+                "\n### ⚠️ VISIBILITY WARNING\n"
+                "All fields and constants in this class are **private**.\n"
+                "They CANNOT be accessed from subclasses, test classes, or via reflection in tests.\n"
+                "You MUST test this class through its **public API only** (constructors + public methods).\n"
+                "Do NOT create Mock subclasses that try to set private fields.\n"
+                "Instead, construct test inputs via the public constructor and feed appropriate data through the public API."
             )
 
         if info.constructors:
@@ -425,6 +451,508 @@ class AgenticRAG:
         return parts
 
     # ------------------------------------------------------------------
+    # Test framework detection
+    # ------------------------------------------------------------------
+
+    def detect_test_framework(self) -> Dict[str, str]:
+        """Auto-detect the test framework and assertion library used by the project.
+
+        Scans existing test files' import statements to determine:
+        - test_framework: 'junit4', 'junit5', 'testng', etc.
+        - assertion_lib: 'junit_assert', 'assertj', 'truth', 'hamcrest', etc.
+        - assertion_import: the actual import statement to use
+
+        Returns a dict with keys: test_framework, assertion_lib, assertion_import, assertion_style.
+        """
+        if self._test_framework_cache is not None:
+            return self._test_framework_cache
+
+        import glob
+
+        result = {
+            "test_framework": "junit4",
+            "assertion_lib": "junit_assert",
+            "assertion_import": "import static org.junit.Assert.*;",
+            "assertion_style": "assertEquals(expected, actual)",
+        }
+
+        if not self.test_dir:
+            self._test_framework_cache = result
+            return result
+
+        # Scan up to 10 test files
+        test_files = glob.glob(
+            os.path.join(self.test_dir, "**", "*Test*.java"), recursive=True
+        )[:10]
+
+        # Count import occurrences
+        import_counts: Dict[str, int] = {
+            "junit4": 0,       # org.junit.Test
+            "junit5": 0,       # org.junit.jupiter
+            "testng": 0,       # org.testng
+            "assertj": 0,      # org.assertj
+            "truth": 0,        # com.google.common.truth
+            "hamcrest": 0,     # org.hamcrest
+            "junit_assert": 0, # org.junit.Assert
+        }
+
+        for filepath in test_files:
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except OSError:
+                continue
+
+            if 'org.junit.Test' in content or 'org.junit.Assert' in content:
+                import_counts["junit4"] += 1
+            if 'org.junit.jupiter' in content:
+                import_counts["junit5"] += 1
+            if 'org.testng' in content:
+                import_counts["testng"] += 1
+            if 'org.assertj' in content:
+                import_counts["assertj"] += 1
+            if 'com.google.common.truth' in content:
+                import_counts["truth"] += 1
+            if 'org.hamcrest' in content:
+                import_counts["hamcrest"] += 1
+            if 'org.junit.Assert' in content:
+                import_counts["junit_assert"] += 1
+
+        # Determine test framework
+        fw_candidates = [("junit4", import_counts["junit4"]),
+                         ("junit5", import_counts["junit5"]),
+                         ("testng", import_counts["testng"])]
+        fw_candidates.sort(key=lambda x: x[1], reverse=True)
+        if fw_candidates[0][1] > 0:
+            result["test_framework"] = fw_candidates[0][0]
+
+        # Determine assertion library
+        assert_candidates = [
+            ("truth", import_counts["truth"],
+             "import static com.google.common.truth.Truth.assertThat;",
+             "assertThat(actual).isEqualTo(expected)"),
+            ("assertj", import_counts["assertj"],
+             "import static org.assertj.core.api.Assertions.assertThat;",
+             "assertThat(actual).isEqualTo(expected)"),
+            ("hamcrest", import_counts["hamcrest"],
+             "import static org.hamcrest.MatcherAssert.assertThat;\nimport static org.hamcrest.Matchers.*;",
+             "assertThat(actual, is(expected))"),
+            ("junit_assert", import_counts["junit_assert"],
+             "import static org.junit.Assert.*;",
+             "assertEquals(expected, actual)"),
+        ]
+        assert_candidates.sort(key=lambda x: x[1], reverse=True)
+        if assert_candidates[0][1] > 0:
+            result["assertion_lib"] = assert_candidates[0][0]
+            result["assertion_import"] = assert_candidates[0][2]
+            result["assertion_style"] = assert_candidates[0][3]
+
+        self._test_framework_cache = result
+        self._log(f"检测到测试框架: {result['test_framework']}, 断言库: {result['assertion_lib']}")
+        return result
+
+    # ------------------------------------------------------------------
+    # Test exemplar & usage example retrieval (multi-layer)
+    # ------------------------------------------------------------------
+
+    # Shared constants for exemplar retrieval
+    _MAX_EXEMPLARS = 3
+    _MAX_EXEMPLAR_CHARS = 1500
+    _MAX_METHOD_CHARS = 600
+
+    @staticmethod
+    def _extract_method_name(method_signature: str) -> str:
+        """Extract bare method name from a full signature string."""
+        if '(' in method_signature:
+            before_paren = method_signature.split('(')[0]
+            parts = before_paren.split()
+            return parts[-1] if parts else ""
+        return ""
+
+    def _build_test_exemplar_section(self, cls: str, method_signature: str) -> List[str]:
+        """Multi-layer retrieval for test exemplars and usage examples.
+
+        Layer 1 (Test Patterns):  Scan test_dir for existing tests of the target method.
+        Layer 2 (Usage Examples): Search the code index for call-sites of the target method.
+        Layer 3 (Sibling Tests): Scan test_dir for tests of *other* methods in the same class
+                                  to provide a general testing template.
+
+        Each layer is tried in order; as soon as enough exemplars are found, later layers
+        are skipped.  Results from all contributing layers are merged into a single context
+        section with clear labels.
+        """
+        method_name = self._extract_method_name(method_signature)
+        if not method_name:
+            return []
+
+        # Check cache
+        cache_key = f"{cls}:{method_name}"
+        if cache_key in self._test_exemplar_cache:
+            cached = self._test_exemplar_cache[cache_key]
+            return [cached] if cached else []
+
+        parts: List[str] = []          # context section fragments
+        total_found = 0                # total exemplar count across layers
+        budget = self._MAX_EXEMPLAR_CHARS  # remaining char budget
+
+        # ── Layer 1: Test Patterns (from test_dir) ───────────────────────
+        if self.test_dir:
+            test_exemplars = self._search_test_methods(cls, method_name)
+            if test_exemplars:
+                selected, used_chars = self._select_within_budget(test_exemplars, budget)
+                budget -= used_chars
+                total_found += len(selected)
+                parts.append(self._format_test_pattern_section(cls, selected))
+                self._log(f"Layer1 测试模式: 找到 {len(selected)} 个 ({used_chars} chars)")
+
+        # ── Layer 2: Usage Examples (from code index) ────────────────────
+        if total_found < self._MAX_EXEMPLARS:
+            usage_exemplars = self._search_usage_examples(cls, method_name)
+            if usage_exemplars:
+                remaining = self._MAX_EXEMPLARS - total_found
+                selected, used_chars = self._select_within_budget(
+                    usage_exemplars[:remaining], budget
+                )
+                budget -= used_chars
+                total_found += len(selected)
+                parts.append(self._format_usage_example_section(cls, method_name, selected))
+                self._log(f"Layer2 调用范例: 找到 {len(selected)} 个 ({used_chars} chars)")
+
+        # ── Layer 3: Sibling Tests (other methods in same test class) ────
+        if total_found == 0 and self.test_dir:
+            sibling_exemplars = self._search_sibling_tests(cls, method_name)
+            if sibling_exemplars:
+                selected, used_chars = self._select_within_budget(
+                    sibling_exemplars[:self._MAX_EXEMPLARS], budget
+                )
+                total_found += len(selected)
+                parts.append(self._format_sibling_test_section(cls, selected))
+                self._log(f"Layer3 同类测试模板: 找到 {len(selected)} 个 ({used_chars} chars)")
+
+        if not parts:
+            self._log(f"三层检索均未找到 {method_name}() 的示例")
+            self._test_exemplar_cache[cache_key] = ""
+            return []
+
+        section = "\n".join(parts)
+        self._test_exemplar_cache[cache_key] = section
+        return [section]
+
+    # ── Layer helpers ─────────────────────────────────────────────────────
+
+    def _search_test_methods(self, cls: str, method_name: str) -> List[str]:
+        """Layer 1: Find @Test methods in test_dir that call the target method."""
+        import glob
+
+        test_files = glob.glob(
+            os.path.join(self.test_dir, "**", f"{cls}Test.java"), recursive=True
+        )
+        if not test_files:
+            test_files = glob.glob(
+                os.path.join(self.test_dir, "**", f"*{cls}*Test*.java"), recursive=True
+            )
+        if not test_files:
+            return []
+
+        return self._extract_test_methods_from_files(
+            test_files[:2], method_name, self._MAX_EXEMPLARS
+        )
+
+    def _search_usage_examples(self, cls: str, method_name: str) -> List[str]:
+        """Layer 2: Search the code index for methods that call the target method.
+
+        Scans all indexed code blocks for call-sites like `.methodName(` and
+        returns the surrounding method bodies as usage examples.
+        """
+        exemplars: List[str] = []
+        call_pattern = f".{method_name}("
+        # Also match unqualified calls: methodName(
+        bare_pattern = f"{method_name}("
+
+        for block in self.rag.blocks:
+            if len(exemplars) >= self._MAX_EXEMPLARS:
+                break
+            # Skip the target method's own definition
+            if block.class_name == cls and method_name in block.signature:
+                continue
+            # Skip test code (we handle that in Layer 1)
+            # Use path-based check to avoid false positives (e.g. project path containing 'unittest')
+            if "Test" in block.class_name or "/src/test/" in block.file or "/test/" in block.file.split("/src/")[-1]:
+                continue
+            code = block.code
+            if call_pattern in code or (block.class_name == cls and bare_pattern in code):
+                # Trim to budget
+                trimmed = code[:self._MAX_METHOD_CHARS]
+                suffix = "\n  // ... (truncated)" if len(code) > self._MAX_METHOD_CHARS else ""
+                exemplars.append(
+                    f"// {block.class_name}.{block.signature.split('(')[0].split()[-1] if '(' in block.signature else block.signature}\n"
+                    f"{trimmed}{suffix}"
+                )
+
+        return exemplars
+
+    def _search_sibling_tests(self, cls: str, method_name: str) -> List[str]:
+        """Layer 3: Find @Test methods for OTHER methods of the same class.
+
+        When no test exists for the target method, these sibling tests show
+        the general testing pattern (how to construct the object, navigate
+        state, make assertions) for the same class.
+        """
+        import glob
+
+        test_files = glob.glob(
+            os.path.join(self.test_dir, "**", f"{cls}Test.java"), recursive=True
+        )
+        if not test_files:
+            test_files = glob.glob(
+                os.path.join(self.test_dir, "**", f"*{cls}*Test*.java"), recursive=True
+            )
+        if not test_files:
+            return []
+
+        # Get all short test methods that do NOT call the target method
+        # (those would have been found by Layer 1)
+        return self._extract_test_methods_from_files(
+            test_files[:1], None, self._MAX_EXEMPLARS,
+            exclude_method=method_name
+        )
+
+    # ── Shared utilities ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_helper_methods(content: str) -> Dict[str, str]:
+        """Extract non-@Test, non-public helper methods from a test file.
+
+        Returns a dict mapping method_name -> method_body for private/package-private
+        helper methods that test methods might call.
+        """
+        helpers: Dict[str, str] = {}
+        lines = content.split('\n')
+        i = 0
+        while i < len(lines):
+            stripped = lines[i].strip()
+            # Skip @Test methods, public methods, class declarations, etc.
+            if stripped.startswith('@Test') or stripped.startswith('public class'):
+                i += 1
+                continue
+            # Match private/package-private helper method declarations
+            # e.g. "private Reader reader(String s) {"
+            # e.g. "Reader reader(String s) {"
+            m = re.match(
+                r'\s*(?:private|protected|static|final|\s)*'
+                r'[\w<>\[\]?]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w,\s]+)?\s*\{',
+                lines[i]
+            )
+            if m and not stripped.startswith('public '):
+                method_name = m.group(1)
+                # Skip constructors and standard methods
+                if method_name in ('if', 'for', 'while', 'switch', 'try', 'catch'):
+                    i += 1
+                    continue
+                start = i
+                brace_depth = lines[i].count('{') - lines[i].count('}')
+                i += 1
+                while i < len(lines) and brace_depth > 0:
+                    brace_depth += lines[i].count('{') - lines[i].count('}')
+                    i += 1
+                helpers[method_name] = '\n'.join(lines[start:i])
+                continue
+            i += 1
+        return helpers
+
+    @staticmethod
+    def _find_helper_calls_in_exemplar(exemplar: str, helpers: Dict[str, str]) -> List[str]:
+        """Find which helper methods from the test class are called in an exemplar.
+
+        Returns list of helper method names that appear as calls in the exemplar.
+        """
+        called = []
+        for name in helpers:
+            # Match method call pattern: name( but not new Name( or .name(
+            # We want bare calls like reader("...") which are helper calls
+            pattern = rf'(?<!\w)(?<!\.)(?<!new ){re.escape(name)}\s*\('
+            if re.search(pattern, exemplar):
+                called.append(name)
+        return called
+
+    def _annotate_exemplar_with_helpers(
+        self, exemplar: str, helpers: Dict[str, str], called_helpers: List[str]
+    ) -> str:
+        """Annotate an exemplar with information about helper methods it uses.
+
+        Strategy:
+        - If the helper is short (<=5 lines), inline it as a comment above the exemplar.
+        - If the helper is longer, add a warning comment explaining what it does.
+        """
+        if not called_helpers:
+            return exemplar
+
+        annotations = []
+        for name in called_helpers:
+            helper_code = helpers[name]
+            helper_lines = helper_code.strip().split('\n')
+            if len(helper_lines) <= 5:
+                # Short helper: inline the full definition
+                annotations.append(
+                    f"// NOTE: '{name}()' is a private helper in the original test class:\n"
+                    f"// {helper_code.strip()}\n"
+                    f"// In your generated test, replace '{name}(...)' with the equivalent inline code."
+                )
+            else:
+                # Long helper: just describe it
+                first_line = helper_lines[0].strip()
+                annotations.append(
+                    f"// NOTE: '{name}()' is a private helper in the original test class: {first_line}\n"
+                    f"// Do NOT call '{name}()' directly. Inline its logic or use the equivalent public API."
+                )
+
+        annotation_block = '\n'.join(annotations)
+        return f"{annotation_block}\n{exemplar}"
+
+    def _extract_test_methods_from_files(
+        self,
+        files: List[str],
+        target_method: Optional[str],
+        max_count: int,
+        exclude_method: str = None,
+    ) -> List[str]:
+        """Extract @Test methods from Java files.
+
+        Args:
+            files: Java file paths to scan.
+            target_method: If set, only return methods whose body contains this string.
+                           If None, return any short test method.
+            max_count: Maximum number of methods to return.
+            exclude_method: If set, skip methods whose body contains this string.
+
+        The extracted exemplars are annotated with information about any private
+        helper methods they call, so the LLM knows not to copy them blindly.
+        """
+        exemplars: List[str] = []
+
+        for filepath in files:
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except OSError:
+                continue
+
+            # Pre-extract helper methods from this file
+            helpers = self._extract_helper_methods(content)
+
+            lines = content.split('\n')
+            in_test = False
+            current: List[str] = []
+            brace_depth = 0
+            found_target = False
+
+            for line in lines:
+                stripped = line.strip()
+
+                if stripped.startswith('@Test'):
+                    in_test = True
+                    current = [line]
+                    brace_depth = 0
+                    found_target = (target_method is None)  # accept all if no filter
+                    continue
+
+                if in_test:
+                    current.append(line)
+                    brace_depth += line.count('{') - line.count('}')
+
+                    if target_method and target_method in line:
+                        found_target = True
+
+                    # Method ended
+                    if brace_depth <= 0 and '{' in ''.join(current):
+                        method_text = '\n'.join(current)
+                        should_exclude = (
+                            exclude_method and exclude_method in method_text
+                        )
+                        if (found_target
+                                and len(current) > 2
+                                and len(method_text) < self._MAX_METHOD_CHARS
+                                and not should_exclude):
+                            # Annotate with helper method info
+                            called = self._find_helper_calls_in_exemplar(
+                                method_text, helpers
+                            )
+                            if called:
+                                method_text = self._annotate_exemplar_with_helpers(
+                                    method_text, helpers, called
+                                )
+                            exemplars.append(method_text)
+                        in_test = False
+                        current = []
+
+                        if len(exemplars) >= max_count:
+                            break
+
+            if len(exemplars) >= max_count:
+                break
+
+        return exemplars
+
+    @staticmethod
+    def _select_within_budget(
+        items: List[str], budget: int
+    ) -> Tuple[List[str], int]:
+        """Select items that fit within a character budget."""
+        selected: List[str] = []
+        used = 0
+        for item in items:
+            if used + len(item) > budget:
+                break
+            selected.append(item)
+            used += len(item)
+        return selected, used
+
+    # ── Section formatters ────────────────────────────────────────────────
+
+    @staticmethod
+    def _format_test_pattern_section(cls: str, exemplars: List[str]) -> str:
+        """Format Layer 1 results: existing test patterns."""
+        return (
+            "\n### 📋 Existing Test Patterns (FOLLOW THIS STYLE)\n"
+            f"The following are real test methods from the project's existing test suite for `{cls}`.\n"
+            "**You MUST follow the same testing pattern**: construct the object via its public constructor,\n"
+            "navigate to the correct state using public API calls, then call the target method and assert.\n"
+            "Do NOT use Mock classes, subclasses, or reflection.\n\n"
+            "```java\n"
+            + "\n\n".join(exemplars)
+            + "\n```"
+        )
+
+    @staticmethod
+    def _format_usage_example_section(
+        cls: str, method_name: str, exemplars: List[str]
+    ) -> str:
+        """Format Layer 2 results: usage examples from the codebase."""
+        return (
+            f"\n### 📌 Usage Examples of `{cls}.{method_name}()` in the Codebase\n"
+            "The following code snippets show how other parts of the codebase call this method.\n"
+            "Use these to understand the correct way to set up the object and invoke the method.\n"
+            "Do NOT copy internal implementation details; focus on the public API call patterns.\n\n"
+            "```java\n"
+            + "\n\n".join(exemplars)
+            + "\n```"
+        )
+
+    @staticmethod
+    def _format_sibling_test_section(cls: str, exemplars: List[str]) -> str:
+        """Format Layer 3 results: sibling test templates."""
+        return (
+            f"\n### 📎 Test Templates for `{cls}` (other methods)\n"
+            f"No existing tests were found for the target method, but the following tests for\n"
+            f"other methods of `{cls}` show the general testing pattern (object construction,\n"
+            "state navigation, assertion style). **Adapt this pattern** for the target method.\n"
+            "Do NOT use Mock classes, subclasses, or reflection.\n\n"
+            "```java\n"
+            + "\n\n".join(exemplars)
+            + "\n```"
+        )
+
+    # ------------------------------------------------------------------
     # Main retrieval entry point
     # ------------------------------------------------------------------
 
@@ -483,6 +1011,27 @@ class AgenticRAG:
         self._log("语义搜索补充...")
         semantic_parts = self._build_semantic_sections(code, top_k, deps, seen_sigs)
         parts.extend(semantic_parts)
+
+        # 3e. Test exemplar & usage examples (multi-layer retrieval)
+        if method_signature:
+            self._log("多层检索: 测试模式 / 调用范例 / 同类模板...")
+            exemplar_parts = self._build_test_exemplar_section(cls, method_signature)
+            if exemplar_parts:
+                parts.extend(exemplar_parts)
+                retrieval_log["found"].append("测试示例/调用范例 (multi-layer exemplars)")
+
+        # 3f. Test framework & assertion library detection
+        fw_info = self.detect_test_framework()
+        fw_section = (
+            "\n### 🔧 Project Test Framework\n"
+            f"- Test framework: **{fw_info['test_framework']}**\n"
+            f"- Assertion library: **{fw_info['assertion_lib']}**\n"
+            f"- Import: `{fw_info['assertion_import']}`\n"
+            f"- Style: `{fw_info['assertion_style']}`\n"
+            f"\n**You MUST use the assertion library above.** Do NOT use other assertion libraries.\n"
+        )
+        parts.insert(0, fw_section)  # Insert at the beginning for high visibility
+        retrieval_log["found"].append(f"测试框架: {fw_info['test_framework']}/{fw_info['assertion_lib']}")
 
         # ── Step 4: Context size guard ────────────────────────────────────
         context = "\n".join(parts)

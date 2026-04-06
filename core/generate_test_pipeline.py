@@ -16,7 +16,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from rag import CodeRAG, AgenticRAG
-from llm import generate_test
+from llm import generate_test, analyze_method
 from evaluation.evaluator import TestEvaluator, print_report
 
 
@@ -112,10 +112,48 @@ async def step2_retrieve_context():
     return context
 
 
-async def step3_generate_test(context: str, output_path: str):
-    """步骤3：生成单元测试"""
+async def step2_5_analyze_method(context: str):
+    """步骤2.5：LLM解读方法功能 -> 分析覆盖点 -> 设计测试用例"""
     print("=" * 60)
-    print("步骤3：生成单元测试")
+    print("步骤2.5：LLM方法解读与测试用例设计")
+    print("=" * 60)
+
+    analysis = await analyze_method(
+        class_name="JsonReader",
+        method_signature="public long nextLong() throws IOException",
+        method_code=TARGET_METHOD,
+        context=context,
+        full_class_name="com.google.gson.stream.JsonReader",
+    )
+
+    # Display results
+    print("\n--- 方法功能解读 ---")
+    print(analysis["method_understanding"][:800])
+    if len(analysis["method_understanding"]) > 800:
+        print("... (truncated)")
+
+    print("\n--- 覆盖点分析 ---")
+    print(analysis["coverage_analysis"][:800])
+    if len(analysis["coverage_analysis"]) > 800:
+        print("... (truncated)")
+
+    print(f"\n--- 测试用例设计 ({len(analysis['test_cases'])} 个用例) ---")
+    for tc in analysis["test_cases"]:
+        tc_id = tc.get('id', '?')
+        tc_name = tc.get('name', '?')
+        tc_desc = tc.get('description', '')
+        tc_cat = tc.get('category', '')
+        tc_pri = tc.get('priority', '')
+        print(f"  [{tc_id}] {tc_name} ({tc_cat}/{tc_pri}): {tc_desc}")
+
+    print(f"\n✓ 方法解读与测试用例设计完成\n")
+    return analysis
+
+
+async def step3_generate_test(context: str, output_path: str, test_cases=None):
+    """步骤3：根据测试用例设计生成单元测试"""
+    print("=" * 60)
+    print("步骤3：根据测试用例设计生成单元测试")
     print("=" * 60)
     
     result = await generate_test(
@@ -126,6 +164,7 @@ async def step3_generate_test(context: str, output_path: str):
         context=context,
         test_class_name="JsonReader_nextLong_Test",
         full_class_name="com.google.gson.stream.JsonReader",
+        test_cases=test_cases,
     )
     
     if result["success"]:
@@ -251,9 +290,12 @@ async def full_pipeline():
     print(context[:1500] if len(context) > 1500 else context)
     print("-" * 60 + "\n")
     
-    # 步骤2.5：获取基准覆盖率
+    # 步骤2.5a：LLM方法解读与测试用例设计
+    analysis = await step2_5_analyze_method(context)
+
+    # 步骤2.5b：获取基准覆盖率
     print("=" * 60)
-    print("步骤2.5：获取基准覆盖率")
+    print("步骤2.5b：获取基准覆盖率")
     print("=" * 60)
     evaluator = TestEvaluator(
         project_dir=MAVEN_PROJECT_DIR,
@@ -268,9 +310,9 @@ async def full_pipeline():
         print("  ! 无法获取基准覆盖率")
     print()
     
-    # 步骤3：生成测试
+    # 步骤3：根据测试用例设计生成测试
     test_output_path = os.path.join(OUTPUT_DIR, "JsonReader_nextLong_Test.java")
-    gen_result = await step3_generate_test(context, test_output_path)
+    gen_result = await step3_generate_test(context, test_output_path, test_cases=analysis["test_cases"])
     
     if not gen_result["success"]:
         print("\n✗ 流程终止：测试生成失败")
@@ -279,31 +321,9 @@ async def full_pipeline():
     # 步骤4：评估测试（包含新测试）
     report = await step4_evaluate(test_output_path)
     
-    # 步骤5：保存报告
+    # 步骤5：保存报告（内部已打印覆盖率对比）
     report_path = os.path.join(REPORT_DIR, "evaluation_report.json")
     report_data = step5_save_report(report, report_path, baseline_coverage)
-    
-    # 对比并显示覆盖率提升
-    if baseline_coverage and report.coverage:
-        line_improvement = report.coverage.line_coverage - baseline_coverage.line_coverage
-        branch_improvement = report.coverage.branch_coverage - baseline_coverage.branch_coverage
-        
-        print("\n" + "=" * 60)
-        print("覆盖率提升对比")
-        print("=" * 60)
-        print(f"{'指标':<15} {'基准':<15} {'新测试后':<15} {'提升':<15}")
-        print("-" * 60)
-        print(f"{'行覆盖率':<15} {baseline_coverage.line_coverage:.1f}%{'':<9} {report.coverage.line_coverage:.1f}%{'':<9} {line_improvement:+.1f}%")
-        print(f"{'分支覆盖率':<15} {baseline_coverage.branch_coverage:.1f}%{'':<9} {report.coverage.branch_coverage:.1f}%{'':<9} {branch_improvement:+.1f}%")
-        print("=" * 60)
-        
-        # 判断提升效果
-        if line_improvement > 10:
-            print("\n✨ 覆盖率显著提升！Agentic RAG系统效果明显")
-        elif line_improvement > 0:
-            print("\n✓ 覆盖率有所提升")
-        else:
-            print("\n! 覆盖率未提升或下降，需要检查测试生成质量")
     
     # 总结
     print("\n" + "=" * 60)
@@ -312,6 +332,7 @@ async def full_pipeline():
     print(f"✓ 测试文件：{test_output_path}")
     print(f"✓ 评估报告：{report_path}")
     print(f"✓ 编译状态：{'成功' if report.compilation_success else '失败'}")
+    print(f"✓ 测试用例数：{len(analysis['test_cases'])}")
     if report.coverage:
         print(f"✓ 行覆盖率：{report.coverage.line_coverage:.1f}%")
         print(f"✓ 分支覆盖率：{report.coverage.branch_coverage:.1f}%")
@@ -321,7 +342,8 @@ async def full_pipeline():
         "test_file": test_output_path,
         "report": report,
         "report_data": report_data,
-        "baseline_coverage": baseline_coverage
+        "baseline_coverage": baseline_coverage,
+        "analysis": analysis,
     }
 
 
@@ -361,12 +383,25 @@ def quick_generate(
             method_signature=method_signature
         )
 
-        # 3. 生成测试
-        print("[→] 生成测试...")
-        # 从方法签名提取方法名
+        # 2.5. LLM方法解读与测试用例设计
+        print("[→] LLM方法解读与测试用例设计...")
         method_name = method_signature.split()[1].split('(')[0] if '(' in method_signature else method_signature.split()[-1]
         test_class_name = f"{class_name}_{method_name}_Test"
         full_class_name = f"{package}.{class_name}"
+
+        analysis = await analyze_method(
+            class_name=class_name,
+            method_signature=method_signature,
+            method_code=method_code,
+            context=context,
+            full_class_name=full_class_name,
+        )
+        print(f"✓ 测试用例设计完成：{len(analysis['test_cases'])} 个用例")
+        for tc in analysis["test_cases"]:
+            print(f"  - [{tc.get('id', '?')}] {tc.get('name', '?')}: {tc.get('description', '')}")
+
+        # 3. 根据测试用例设计生成测试
+        print("[→] 根据测试用例设计生成测试...")
         
         result = await generate_test(
             class_name=class_name,
@@ -376,6 +411,7 @@ def quick_generate(
             context=context,
             test_class_name=test_class_name,
             full_class_name=full_class_name,
+            test_cases=analysis["test_cases"],
         )
 
         if not result["success"]:
@@ -405,31 +441,8 @@ def quick_generate(
             target_method=method_name
         )
 
-        # 5. 打印报告和对比
+        # 5. 打印报告
         print_report(report)
-
-        # 对比覆盖率
-        if baseline_coverage and report.coverage:
-            line_imp = report.coverage.line_coverage - baseline_coverage.line_coverage
-            branch_imp = report.coverage.branch_coverage - baseline_coverage.branch_coverage
-
-            print("\n" + "=" * 60)
-            print("覆盖率提升对比")
-            print("=" * 60)
-            print(f"{'指标':<15} {'基准':<15} {'新测试后':<15} {'提升':<15}")
-            print("-" * 60)
-            print(f"{'行覆盖率':<15} {baseline_coverage.line_coverage:.1f}%{'':<9} {report.coverage.line_coverage:.1f}%{'':<9} {line_imp:+.1f}%")
-            print(f"{'分支覆盖率':<15} {baseline_coverage.branch_coverage:.1f}%{'':<9} {report.coverage.branch_coverage:.1f}%{'':<9} {branch_imp:+.1f}%")
-            print("=" * 60)
-
-            if line_imp > 10:
-                print("\n✨ 覆盖率显著提升！Agentic RAG系统效果明显")
-            elif line_imp > 0:
-                print("\n✓ 覆盖率有所提升")
-            else:
-                print("\n! 覆盖率未提升或下降，需要检查测试生成质量")
-        else:
-            print("\n! 无法进行覆盖率对比")
 
         return {
             "success": True,

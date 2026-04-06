@@ -6,11 +6,8 @@ import os
 import sys
 import json
 import asyncio
-import glob
-import time
 from datetime import datetime
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -22,7 +19,7 @@ from pydantic import BaseModel
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from rag import CodeRAG, AgenticRAG
-from llm import generate_test, chat, PROMPTS
+from llm import generate_test, chat, analyze_method, format_test_cases_for_prompt, PROMPTS
 from evaluation.evaluator import TestEvaluator, print_report
 
 app = FastAPI(title="UT-Gen Dashboard")
@@ -59,7 +56,6 @@ class RunState:
 
     def __init__(self):
         self.steps: List[Dict[str, Any]] = []
-        self.current_step: Optional[str] = None
         self.ws_clients: List[WebSocket] = []
 
     async def broadcast(self, msg: dict):
@@ -268,14 +264,33 @@ async def run_pipeline(req: RunRequest):
         await state.log("baseline", "done", baseline_data)
         result["steps"]["baseline"] = baseline_data
 
-        # ---- Step 3: Generate Test ----
+        # ---- Step 2.5: LLM Method Analysis & Test Case Design ----
+        await state.log("analysis", "start")
+        method_name = req.method_signature.split("(")[0].split()[-1] if "(" in req.method_signature else req.target_class
+        test_class_name = f"{req.target_class}_{method_name}_Test"
+        package_name = ".".join(req.full_class_name.split(".")[:-1]) if "." in req.full_class_name else ""
+
+        analysis = await analyze_method(
+            class_name=req.target_class,
+            method_signature=req.method_signature,
+            method_code=req.method_code,
+            context=context,
+            full_class_name=req.full_class_name,
+        )
+
+        analysis_data = {
+            "method_understanding": analysis["method_understanding"],
+            "coverage_analysis": analysis["coverage_analysis"],
+            "test_cases": analysis["test_cases"],
+            "test_cases_count": len(analysis["test_cases"]),
+        }
+        await state.log("analysis", "done", analysis_data)
+        result["steps"]["analysis"] = analysis_data
+
+        # ---- Step 3: Generate Test (based on test case design) ----
         await state.log("generate", "start")
 
         # Build the prompts that will be sent to LLM (for display)
-        method_name = req.method_signature.split("(")[0].split()[-1] if "(" in req.method_signature else req.target_class
-        test_class_name = f"{req.target_class}_{method_name}_Test"
-        # Derive package_name from full_class_name
-        package_name = ".".join(req.full_class_name.split(".")[:-1]) if "." in req.full_class_name else ""
         system_prompt = PROMPTS["test_system"].format(
             class_name=req.target_class,
             test_class_name=test_class_name,
@@ -283,6 +298,8 @@ async def run_pipeline(req: RunRequest):
             package_name=package_name,
             context=context or "No context",
         )
+
+        test_cases_str = format_test_cases_for_prompt(analysis["test_cases"]) if analysis["test_cases"] else "No pre-designed test cases."
         user_prompt = PROMPTS["test_user"].format(
             class_name=req.target_class,
             test_class_name=test_class_name,
@@ -290,6 +307,7 @@ async def run_pipeline(req: RunRequest):
             method_code=req.method_code,
             full_class_name=req.full_class_name,
             package_name=package_name,
+            test_cases=test_cases_str,
         )
 
         await state.log("generate", "prompts", {
@@ -309,6 +327,7 @@ async def run_pipeline(req: RunRequest):
             context=context,
             test_class_name=test_class_name,
             full_class_name=req.full_class_name,
+            test_cases=analysis["test_cases"],
         )
 
         generated_code = ""
