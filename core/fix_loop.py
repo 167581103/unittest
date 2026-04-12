@@ -310,6 +310,36 @@ def rule_fix(code: str, classified: dict) -> Tuple[str, List[str]]:
         code = '\n'.join(new_lines)
         fixes.append("Removed duplicate imports")
 
+    # Fix 10: incompatible_types — fix wrong variable type in assignments
+    # e.g. "Gson result = gson.serializeNulls();" when serializeNulls() returns boolean
+    for err in classified.get("incompatible_types", []):
+        msg = err.get("message", "")
+        line_no = err.get("line", 0)
+        # Pattern: "incompatible types: boolean cannot be converted to Gson"
+        type_match = re.search(
+            r'incompatible types:\s+(\S+)\s+cannot be converted to\s+(\S+)', msg
+        )
+        if type_match and line_no > 0:
+            actual_type = type_match.group(1)   # e.g. "boolean"
+            wrong_type = type_match.group(2)    # e.g. "Gson"
+            lines = code.split('\n')
+            if line_no <= len(lines):
+                target_line = lines[line_no - 1]
+                # Try to fix: "WrongType var = expr;" -> "ActualType var = expr;"
+                fixed_line = re.sub(
+                    rf'\b{re.escape(wrong_type)}\b(\s+\w+\s*=)',
+                    f'{actual_type}\\1',
+                    target_line,
+                    count=1
+                )
+                if fixed_line != target_line:
+                    lines[line_no - 1] = fixed_line
+                    code = '\n'.join(lines)
+                    fixes.append(
+                        f"Fixed type mismatch at line {line_no}: "
+                        f"{wrong_type} -> {actual_type}"
+                    )
+
     return code, fixes
 
 
@@ -342,7 +372,10 @@ def resolve_symbols_from_rag(symbols: List[str], code_rag) -> str:
                 pub_methods = [m for m in info.methods
                                if 'public' in m.get('modifiers', [])]
                 if pub_methods:
-                    lines.append(f"  Public methods: {', '.join(m['name'] for m in pub_methods[:15])}")
+                    for pm in pub_methods[:15]:
+                        ret = pm.get('return_type', '')
+                        params = ', '.join(pm.get('params', []))
+                        lines.append(f"  public {ret} {pm['name']}({params})")
             resolved.append('\n'.join(lines))
             continue
 
@@ -477,10 +510,10 @@ async def fix_compile_errors(
             + len(classified.get('not_public', []))
             + (1 if classified['brace_mismatch'] else 0)
             + (1 if classified['illegal_character'] else 0)
+            + len(classified['incompatible_types'])
         )
         n_hard = (
             len(classified['cannot_find_symbol'])
-            + len(classified['incompatible_types'])
             + len(classified.get('ambiguous_reference', []))
             + len(classified['other'])
         )

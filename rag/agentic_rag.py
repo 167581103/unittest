@@ -264,6 +264,26 @@ class AgenticRAG:
     # Context assembly
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _clean_method_signature(method: Dict) -> str:
+        """Build a clean method signature from parsed components.
+
+        Avoids using the raw 'signature' field which may contain annotations
+        like @SuppressWarnings({...}) that break split('{') truncation.
+        Instead, reconstructs: [public|protected] [static] ReturnType name(params)
+        """
+        mods = method.get('modifiers', [])
+        # Keep only access modifiers and 'static'/'final'/'abstract'/'synchronized'
+        clean_mods = [m for m in mods if m in ('public', 'protected', 'private',
+                                                'static', 'final', 'abstract',
+                                                'synchronized', 'default')]
+        ret = method.get('return_type', '') or ''
+        name = method.get('name', '')
+        params = method.get('params', [])
+        param_str = ', '.join(params)
+        parts = clean_mods + ([ret] if ret else []) + [f"{name}({param_str})"]
+        return ' '.join(parts)
+
     def _build_class_section(self, cls: str, deps: Dict[str, List[str]]) -> List[str]:
         """Build the primary class structure section with visibility annotations."""
         info = self.rag.class_info.get(cls)
@@ -327,16 +347,24 @@ class AgenticRAG:
         # List all public methods to prevent LLM hallucinating non-existent APIs
         if info.methods:
             public_methods = [
-                m for m in info.methods if 'public' in m.get('signature', '')
+                m for m in info.methods if 'public' in m.get('modifiers', [])
             ]
             if public_methods:
+                # Use clean signatures (no annotations, no body)
                 method_sigs = [
-                    m.get('signature', '').split('{')[0].strip()
+                    self._clean_method_signature(m)
                     for m in public_methods[:30]
                 ]
+                # Deduplicate (same overload may appear from different annotations)
+                seen = set()
+                unique_sigs = []
+                for s in method_sigs:
+                    if s not in seen:
+                        seen.add(s)
+                        unique_sigs.append(s)
                 parts.append(
                     "\n### Available Public Methods (ONLY use these)\n" +
-                    "\n".join(f"  - {s}" for s in method_sigs)
+                    "\n".join(f"  - {s}" for s in unique_sigs)
                 )
 
         return parts
@@ -994,6 +1022,39 @@ class AgenticRAG:
                 retrieval_log["found"].append(f"类定义: {cls}")
             else:
                 retrieval_log["not_found"].append(f"类定义: {cls}")
+
+        # 3a+. Overload disambiguation: when the target method has overloads,
+        #       add a clear section telling the LLM which exact overload is under test.
+        if cls and method_signature:
+            method_name = self._extract_method_name(method_signature)
+            info = self.rag.class_info.get(cls)
+            if info and method_name:
+                overloads = [
+                    m for m in info.methods
+                    if m.get('name') == method_name and 'public' in m.get('modifiers', [])
+                ]
+                if len(overloads) > 1:
+                    overload_sigs = [self._clean_method_signature(m) for m in overloads]
+                    # Deduplicate
+                    seen_ol = set()
+                    unique_overloads = []
+                    for s in overload_sigs:
+                        if s not in seen_ol:
+                            seen_ol.add(s)
+                            unique_overloads.append(s)
+                    section = (
+                        f"\n### ⚠️ OVERLOAD DISAMBIGUATION for `{method_name}`\n"
+                        f"This class has **{len(unique_overloads)} overloads** of `{method_name}`. "
+                        f"The **target method under test** is:\n"
+                        f"  **→ {method_signature}**\n\n"
+                        f"All overloads:\n" +
+                        "\n".join(f"  {'→ ' if method_signature.strip() in s or s in method_signature.strip() else '  '}{s}" for s in unique_overloads) +
+                        f"\n\n**Your tests MUST call the exact target overload above.** "
+                        f"Pay attention to parameter types to avoid ambiguous method references."
+                    )
+                    parts.append(section)
+                    self._log(f"重载消歧: {method_name} 有 {len(unique_overloads)} 个重载")
+                    retrieval_log["found"].append(f"重载消歧: {method_name} ({len(unique_overloads)} overloads)")
 
         # 3b. Dependent methods
         method_parts, method_log = self._build_method_sections(deps, cls, seen_sigs)

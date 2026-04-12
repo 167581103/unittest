@@ -169,7 +169,7 @@ class JavaParser:
                 modifiers = [self._text(m, code) for m in ch.children if m.type not in ("(", ")", ",")]
             elif ch.type == "void_type":
                 return_type = "void"
-            elif ch.type in ("type_identifier", "array_type", "generic_type", "integral_type", "floating_point_type"):
+            elif ch.type in ("type_identifier", "array_type", "generic_type", "integral_type", "floating_point_type", "boolean_type"):
                 return_type = self._text(ch, code)
             elif ch.type == "identifier":
                 name = self._text(ch, code)
