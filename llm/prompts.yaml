@@ -110,6 +110,69 @@ test_case_design: |
      - 绝对不要在 setup 中使用反射、Mock子类或直接设置私有字段
   8. 如果上下文中有 "Existing Test Patterns"，请参考其中的测试模式来设计 setup 和 input
 
+# ============ 合并 Phase: 一次LLM调用完成理解+覆盖分析+用例设计 ============
+
+# 合并版：将原来的3个Phase合并为1次LLM调用，节省2次API调用
+analyze_all_in_one: |
+  你是一位资深Java测试工程师。请仔细阅读以下Java方法的源代码，完成三个任务：功能解读、覆盖分析、测试用例设计。
+
+  被测类: {full_class_name}
+  方法签名: {method_signature}
+  
+  源代码:
+  ```java
+  {method_code}
+  ```
+
+  相关上下文（类结构、依赖方法等）:
+  {context}
+
+  请依次完成以下三个任务：
+
+  ## 任务1：功能解读
+  1. **功能概述**：用一段话概括这个方法的核心功能和职责
+  2. **输入输出**：描述方法的参数含义、返回值含义、可能抛出的异常
+  3. **核心逻辑**：列出方法内部的关键处理步骤和分支逻辑
+  4. **状态变更**：方法执行后会修改哪些对象状态
+  5. **依赖关系**：方法依赖了哪些外部方法/字段/类型
+
+  ## 任务2：覆盖分析
+  1. **正常流程覆盖**：列出所有正常执行路径
+  2. **分支覆盖**：列出代码中所有 if/else/switch 分支及触发条件
+  3. **边界条件**：列出所有边界值场景（空值、极值、临界值等）
+  4. **异常路径**：列出所有可能抛出异常的场景和异常类型
+  5. **覆盖优先级**：按重要性排序（高/中/低）
+
+  ## 任务3：测试用例设计
+  返回严格的JSON数组格式：
+  ```json
+  [
+    {{
+      "id": "TC01",
+      "name": "test_描述性名称",
+      "description": "测试目的描述",
+      "category": "normal|boundary|exception|state",
+      "priority": "high|medium|low",
+      "setup": "前置条件和对象构造方式",
+      "input": "具体的输入数据/操作步骤",
+      "expected_output": "预期的返回值或行为",
+      "assertion_type": "assertEquals|assertTrue|assertThrows|...",
+      "coverage_target": "覆盖的代码行/分支描述"
+    }}
+  ]
+  ```
+
+  要求：
+  1. 测试用例数量在 5-12 个之间，确保覆盖所有关键路径
+  2. 每个用例的 name 必须是合法的Java方法名（以test开头，使用驼峰命名）
+  3. setup 和 input 要足够具体，能直接转化为代码
+  4. 只使用上下文中 "Available Public Methods" 列出的公共API
+  5. ⚠️ 严禁使用上下文中未列出的方法，不要猜测API
+  6. ⚠️ 如果上下文中有 "VISIBILITY WARNING"，说明所有字段都是 private 的
+     - setup 中必须通过公共构造函数和公共方法来构造测试状态
+     - 绝对不要在 setup 中使用反射、Mock子类或直接设置私有字段
+  7. 如果上下文中有 "Existing Test Patterns"，请参考其中的测试模式
+
 # ============ Phase 2: Test Code Generation ============
 
 # Unit test generation (enhanced with test case design)
@@ -162,6 +225,27 @@ test_user: |
   - 按照用例的 setup、input、expected_output 和 assertion_type 来实现
 
 # ============ Agentic RAG ============
+
+# Query改写：将方法代码转化为更好的检索查询
+query_rewrite: |
+  你是一个代码检索专家。给定一段Java方法代码，你的任务是生成一个简洁、精准的检索查询，
+  用于在代码库中找到与该方法相关的API、类型、依赖方法等信息。
+
+  目标类: {cls}
+  方法签名: {method_signature}
+  方法代码:
+  ```java
+  {code}
+  ```
+
+  请生成一个检索查询字符串，要求：
+  1. 提取方法中调用的关键API名称（方法名、类名）
+  2. 提取关键的业务语义（如：解析JSON、读取流、类型转换等）
+  3. 包含可能相关的异常类型
+  4. 查询应简洁（不超过50个词），聚焦于最重要的检索关键词
+  5. 只返回查询字符串本身，不要任何解释
+
+  查询字符串:
 
 # 依赖分析（Agentic RAG）
 deps_analysis: |

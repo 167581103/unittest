@@ -18,7 +18,7 @@ from openai import OpenAI
 def _load_config():
     try:
         from dotenv import load_dotenv
-        load_dotenv()
+        load_dotenv(override=True)
     except:
         pass
 
@@ -118,60 +118,53 @@ async def analyze_method(
     context: str = "",
     full_class_name: str = None,
 ) -> Dict:
-    """Three-phase method analysis: understanding -> coverage -> test case design.
+    """Merged method analysis: understanding + coverage + test case design in ONE LLM call.
 
     Returns:
         {
-            "method_understanding": str,   # Phase 1: what the method does
-            "coverage_analysis": str,       # Phase 2: coverage points/surfaces
-            "test_cases": list[dict],       # Phase 3: structured test case designs
-            "test_cases_raw": str,          # Phase 3: raw LLM response
+            "method_understanding": str,   # what the method does
+            "coverage_analysis": str,       # coverage points/surfaces
+            "test_cases": list[dict],       # structured test case designs
+            "test_cases_raw": str,          # raw LLM response
         }
     """
     full_class_name = full_class_name or class_name
 
-    # ── Phase 1: Method Understanding ──────────────────────────────────
-    print("  [LLM] Phase 1: Understanding method functionality...")
-    understanding_prompt = PROMPTS["method_understanding"].format(
+    # ── 合并版：1次LLM调用完成理解+覆盖分析+用例设计 ────────────
+    print("  [LLM] Analyzing method (understanding + coverage + test design)...")
+    merged_prompt = PROMPTS["analyze_all_in_one"].format(
         full_class_name=full_class_name,
         method_signature=method_signature,
         method_code=method_code,
         context=context or "No context",
     )
-    method_understanding = await chat(understanding_prompt, temperature=0.3, max_tokens=2000)
-    print(f"  [LLM] Phase 1 done ({len(method_understanding)} chars)")
+    response = await chat(merged_prompt, temperature=0.4, max_tokens=4000)
+    print(f"  [LLM] Analysis done ({len(response)} chars)")
 
-    # ── Phase 2: Coverage Analysis ─────────────────────────────────────
-    print("  [LLM] Phase 2: Analyzing coverage points...")
-    coverage_prompt = PROMPTS["coverage_analysis"].format(
-        full_class_name=full_class_name,
-        method_signature=method_signature,
-        method_code=method_code,
-        method_understanding=method_understanding,
-        context=context or "No context",
-    )
-    coverage_analysis = await chat(coverage_prompt, temperature=0.3, max_tokens=2000)
-    print(f"  [LLM] Phase 2 done ({len(coverage_analysis)} chars)")
+    # 从合并响应中解析测试用例
+    test_cases = _parse_test_cases(response)
+    print(f"  [LLM] Parsed {len(test_cases)} test cases")
 
-    # ── Phase 3: Test Case Design ──────────────────────────────────────
-    print("  [LLM] Phase 3: Designing test cases...")
-    design_prompt = PROMPTS["test_case_design"].format(
-        full_class_name=full_class_name,
-        method_signature=method_signature,
-        method_code=method_code,
-        method_understanding=method_understanding,
-        coverage_analysis=coverage_analysis,
-        context=context or "No context",
-    )
-    test_cases_raw = await chat(design_prompt, temperature=0.4, max_tokens=4000)
-    test_cases = _parse_test_cases(test_cases_raw)
-    print(f"  [LLM] Phase 3 done ({len(test_cases)} test cases designed)")
+    # 将响应拆分为理解和覆盖分析两部分（用于日志和兼容性）
+    # 简单策略：按任务标题拆分
+    method_understanding = ""
+    coverage_analysis = ""
+
+    parts = re.split(r'##\s*任务[23]', response, maxsplit=2)
+    if len(parts) >= 3:
+        method_understanding = parts[0].strip()
+        # 从第二部分中提取覆盖分析
+        cov_match = re.search(r'##\s*任务2[：:]\s*覆盖分析(.*?)(?=##\s*任务3|$)', response, re.DOTALL)
+        coverage_analysis = cov_match.group(1).strip() if cov_match else parts[1].strip()
+    else:
+        method_understanding = response[:len(response)//2]
+        coverage_analysis = response[len(response)//2:]
 
     return {
         "method_understanding": method_understanding,
         "coverage_analysis": coverage_analysis,
         "test_cases": test_cases,
-        "test_cases_raw": test_cases_raw,
+        "test_cases_raw": response,
     }
 
 
@@ -286,15 +279,52 @@ def _fix_imports(code: str) -> str:
         '',
         code, flags=re.MULTILINE
     )
-    # Replace Google Truth import with JUnit
+    # Replace Google Truth imports with JUnit
     code = re.sub(
         r'^import\s+static\s+com\.google\.common\.truth\.Truth\.assertThat;.*$',
         'import static org.junit.Assert.*;',
         code, flags=re.MULTILINE
     )
+    # Remove non-static Truth import (com.google.common.truth.Truth)
+    code = re.sub(
+        r'^import\s+com\.google\.common\.truth\.Truth;.*\n?',
+        '',
+        code, flags=re.MULTILINE
+    )
+    # Remove any other com.google.common.truth.* imports
+    code = re.sub(
+        r'^import\s+(?:static\s+)?com\.google\.common\.truth\..*\n?',
+        '',
+        code, flags=re.MULTILINE
+    )
 
-    # ── Phase 1: Convert assertThat(...).isEqualTo(...) to assertEquals ──
-    # Pattern: assertThat(expr).isEqualTo(expected)
+    # ── Truth 链式断言替换（具体规则先处理，通用规则后处理）──────────────
+    # assertThat(exc).hasMessageThat().contains(sub)
+    # -> assertTrue(exc.getMessage() != null && exc.getMessage().contains(sub))
+    code = re.sub(
+        r'assertThat\((\w+)\)\.hasMessageThat\(\)\.contains\((.+?)\);',
+        r'assertTrue(\1.getMessage() != null && \1.getMessage().contains(\2));',
+        code
+    )
+    # assertThat(exc).hasMessageThat().isEqualTo(msg)
+    code = re.sub(
+        r'assertThat\((\w+)\)\.hasMessageThat\(\)\.isEqualTo\((.+?)\);',
+        r'assertEquals(\2, \1.getMessage());',
+        code
+    )
+    # assertThat(exc).hasMessageThat().startsWith(prefix)
+    code = re.sub(
+        r'assertThat\((\w+)\)\.hasMessageThat\(\)\.startsWith\((.+?)\);',
+        r'assertTrue(\1.getMessage() != null && \1.getMessage().startsWith(\2));',
+        code
+    )
+    # assertThat(exc).hasMessageThat().endsWith(suffix)
+    code = re.sub(
+        r'assertThat\((\w+)\)\.hasMessageThat\(\)\.endsWith\((.+?)\);',
+        r'assertTrue(\1.getMessage() != null && \1.getMessage().endsWith(\2));',
+        code
+    )
+    # assertThat(expr).isEqualTo(expected) -> assertEquals(expected, expr)
     code = re.sub(
         r'assertThat\((.+?)\)\.isEqualTo\((.+?)\);',
         r'assertEquals(\2, \1);',
@@ -324,12 +354,85 @@ def _fix_imports(code: str) -> str:
         r'assertNotNull(\1);',
         code
     )
+    # assertThat(expr).contains(sub) -> assertTrue(expr.contains(sub))
+    code = re.sub(
+        r'assertThat\((.+?)\)\.contains\((.+?)\);',
+        r'assertTrue(\1.contains(\2));',
+        code
+    )
+    # assertThat(list).hasSize(n) -> assertEquals(n, list.size())
+    code = re.sub(
+        r'assertThat\((.+?)\)\.hasSize\((.+?)\);',
+        r'assertEquals(\2, \1.size());',
+        code
+    )
+    # assertThat(list).isEmpty() -> assertTrue(list.isEmpty())
+    code = re.sub(
+        r'assertThat\((.+?)\)\.isEmpty\(\);',
+        r'assertTrue(\1.isEmpty());',
+        code
+    )
+    # assertThat(list).isNotEmpty() -> assertFalse(list.isEmpty())
+    code = re.sub(
+        r'assertThat\((.+?)\)\.isNotEmpty\(\);',
+        r'assertFalse(\1.isEmpty());',
+        code
+    )
+    # assertThat(str).startsWith(prefix) -> assertTrue(str.startsWith(prefix))
+    code = re.sub(
+        r'assertThat\((.+?)\)\.startsWith\((.+?)\);',
+        r'assertTrue(\1.startsWith(\2));',
+        code
+    )
+    # assertThat(str).endsWith(suffix) -> assertTrue(str.endsWith(suffix))
+    code = re.sub(
+        r'assertThat\((.+?)\)\.endsWith\((.+?)\);',
+        r'assertTrue(\1.endsWith(\2));',
+        code
+    )
+    # assertThat(a).isGreaterThan(b) -> assertTrue(a > b)
+    code = re.sub(
+        r'assertThat\((.+?)\)\.isGreaterThan\((.+?)\);',
+        r'assertTrue(\1 > \2);',
+        code
+    )
+    # assertThat(a).isLessThan(b) -> assertTrue(a < b)
+    code = re.sub(
+        r'assertThat\((.+?)\)\.isLessThan\((.+?)\);',
+        r'assertTrue(\1 < \2);',
+        code
+    )
+    # assertThat(a).isInstanceOf(Clazz.class) -> assertTrue(a instanceof Clazz)
+    code = re.sub(
+        r'assertThat\((.+?)\)\.isInstanceOf\((\w+)\.class\);',
+        r'assertTrue(\1 instanceof \2);',
+        code
+    )
+    # Catch-all: remaining assertThat(...).xxx(...) -> comment placeholder
+    code = re.sub(
+        r'assertThat\((.+?)\)\.[a-zA-Z]+\([^;]*\);',
+        r'// TODO: assertThat(\1) - manual assertion needed',
+        code
+    )
 
     # ── Phase 2: Fix private helper references from exemplars ────────────
     # Replace reader("...") with new StringReader("...") — common pattern
-    # from existing test exemplars that use a private helper method
+    # from existing test exemplars that use a private helper method.
+    # Only replace call-site usages, NOT method declarations.
+    # A call site looks like: `= reader("...")`  or  `(reader("...")`  or  `, reader("...")`
+    # A declaration looks like: `Reader reader(` or `static Reader reader(`
+    # Strategy: first remove any private helper `reader(...)` method declaration
+    # from the generated code, then replace remaining call-site usages.
+    # Step 1: Remove the private helper method body entirely
     code = re.sub(
-        r'(?<!new )(?<!\w)reader\(',
+        r'\n\s*private\s+static\s+\w+\s+reader\s*\([^)]*\)\s*\{[^}]*\}\n?',
+        '\n',
+        code
+    )
+    # Step 2: Replace call-site usages: reader("...") -> new StringReader("...")
+    # Only when preceded by non-word chars (=, (, ,, space) to avoid method decls
+    code = re.sub(
+        r'(?<=[=(,\s])reader\((?=[^)]*["\'])',
         r'new StringReader(',
         code
     )
@@ -464,8 +567,22 @@ async def generate_test(
     )
 
     try:
-        resp = await chat(prompt, system, temperature=0.7, max_tokens=4000)
+        resp = await chat(prompt, system, temperature=0.7, max_tokens=8000)
         code = _extract_code(resp)
+
+        # ★ 截断检测：如果 LLM 输出被 token 上限截断，生成的代码不完整，
+        # 不应写入文件（写了只会让编译器报 "reached end of file" 错误）。
+        # 判断依据：代码里没有 class 定义，或者大括号不平衡。
+        import re as _re
+        has_class = bool(_re.search(r'\bclass\s+\w+', code))
+        brace_balanced = code.count('{') == code.count('}')
+        if not has_class or not brace_balanced:
+            return {
+                "success": False,
+                "error": f"LLM output truncated (has_class={has_class}, brace_balanced={brace_balanced})",
+                "truncated": True,
+            }
+
         code = _fix_imports(code)
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)

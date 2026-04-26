@@ -360,19 +360,24 @@ class TestEvaluator:
             combined_output = result.stdout + result.stderr
             success = result.returncode == 0
             if not success:
-                # 提取编译错误信息
-                if "BUILD FAILURE" in combined_output:
-                    # 查找具体的错误行
+                # 提取编译错误信息（放宽关键词：只要是 [ERROR] .java:[行,列] 格式就展示）
+                if "BUILD FAILURE" in combined_output or "COMPILATION ERROR" in combined_output:
+                    import re as _re
+                    # 任何形如 [ERROR] /xxx.java:[12,34] msg 的行都视为编译错误
                     error_lines = []
                     for line in combined_output.split('\n'):
-                        if 'ERROR' in line and ('cannot find symbol' in line or 
-                                                'does not exist' in line or
-                                                'incompatible types' in line or
-                                                'unreported exception' in line or
-                                                'illegal character' in line or
-                                                'compilation problem' in line):
-                            error_lines.append(line.strip())
-                    
+                        line_stripped = line.strip()
+                        if _re.search(r'\[ERROR\].*\.java:\[\d+,\d+\]', line_stripped):
+                            error_lines.append(line_stripped)
+                        elif 'ERROR' in line_stripped and any(kw in line_stripped for kw in (
+                            'cannot find symbol', 'does not exist', 'incompatible types',
+                            'unreported exception', 'illegal character', 'compilation problem',
+                            'reached end of file', "';' expected", 'class, interface',
+                            'not a statement', 'unclosed', "'{' expected", "'}' expected",
+                            'method in class', 'is not abstract'
+                        )):
+                            error_lines.append(line_stripped)
+
                     if error_lines:
                         print(f"  ✗ 编译错误:")
                         for error in error_lines[:5]:  # 只显示前5个错误
@@ -467,7 +472,11 @@ class TestEvaluator:
             baseline_test: 用于获取基准覆盖率的测试类名
         """
         print(f"[→] 获取基准覆盖率（测试类: {baseline_test}）")
-        
+
+        # ★ 关键：先清理上一次 pipeline 残留的 *Generated* 测试文件，
+        # 否则它们会让基准 Maven 构建直接失败。
+        self._cleanup_old_generated_tests()
+
         project_root = self.project_dir if os.path.exists(os.path.join(self.project_dir, "pom.xml")) else os.path.dirname(self.project_dir)
         baseline_exec = "/tmp/baseline.exec"
         

@@ -68,6 +68,65 @@ class AgenticRAG:
             print(f"  [AgenticRAG] {msg}")
 
     # ------------------------------------------------------------------
+    # LLM query rewrite
+    # ------------------------------------------------------------------
+
+    async def rewrite_query(self, code: str, cls: str, method_signature: str = "") -> str:
+        """Use LLM to rewrite method code into a focused retrieval query.
+
+        This improves semantic search quality by converting raw code into
+        a concise, keyword-rich query that captures the method's intent,
+        key API calls, and relevant types.
+
+        Returns the rewritten query string, or falls back to a heuristic
+        extraction if LLM fails.
+        """
+        from llm import chat, PROMPTS
+
+        # Cache by (cls, method_signature) hash
+        cache_key = hashlib.md5(f"qr:{cls}:{method_signature}:{code[:200]}".encode()).hexdigest()
+        if cache_key in self._deps_cache:
+            cached = self._deps_cache[cache_key]
+            if isinstance(cached, str):
+                self._log(f"命中query改写缓存: {cached[:80]}")
+                return cached
+
+        # Heuristic fallback: extract method calls and class name
+        def _heuristic_query() -> str:
+            calls = re.findall(r'\.([a-zA-Z][a-zA-Z0-9_]+)\s*\(', code)
+            unique_calls = list(dict.fromkeys(calls))[:8]
+            sig_words = re.findall(r'[A-Za-z][A-Za-z0-9_]+', method_signature or "")
+            parts = ([cls] if cls else []) + sig_words[:3] + unique_calls
+            return " ".join(dict.fromkeys(parts))[:200]
+
+        if "query_rewrite" not in PROMPTS:
+            return _heuristic_query()
+
+        try:
+            self._log("调用LLM改写检索query...")
+            prompt = PROMPTS["query_rewrite"].format(
+                cls=cls,
+                method_signature=method_signature or "",
+                code=code[:1500],
+            )
+            resp = await chat(prompt, temperature=0.1, max_tokens=100)
+            # Clean up: take first non-empty line
+            query = next(
+                (line.strip() for line in resp.strip().splitlines() if line.strip()),
+                ""
+            )
+            # Remove any markdown/quotes
+            query = re.sub(r'^[`"\']|[`"\']$', '', query).strip()
+            if not query or len(query) < 5:
+                query = _heuristic_query()
+            self._log(f"改写后query: {query[:100]}")
+            self._deps_cache[cache_key] = query
+            return query
+        except Exception as e:
+            self._log(f"query改写失败，使用启发式: {e}")
+            return _heuristic_query()
+
+    # ------------------------------------------------------------------
     # LLM dependency analysis
     # ------------------------------------------------------------------
 
@@ -447,12 +506,19 @@ class AgenticRAG:
         return parts, log
 
     def _build_semantic_sections(
-        self, code: str, top_k: int, deps: Dict[str, List[str]], seen_sigs: Set[str]
+        self, query: str, top_k: int, deps: Dict[str, List[str]], seen_sigs: Set[str]
     ) -> List[str]:
-        """Semantic search to supplement with related code blocks."""
+        """Semantic search to supplement with related code blocks.
+
+        Args:
+            query: The (optionally LLM-rewritten) search query string.
+            top_k: Maximum number of semantic results to include.
+            deps: Dependency dict from LLM analysis.
+            seen_sigs: Already-included method signatures (to avoid duplicates).
+        """
         parts = []
         dep_methods = set(deps.get("methods", []))
-        results = self.rag.search(code, top_k=top_k)
+        results = self.rag.search(query, top_k=top_k)
 
         added = 0
         for block, score in results:
@@ -1068,9 +1134,11 @@ class AgenticRAG:
         retrieval_log["found"].extend(type_log["found"])
         retrieval_log["not_found"].extend(type_log["not_found"])
 
-        # 3d. Semantic search supplement
-        self._log("语义搜索补充...")
-        semantic_parts = self._build_semantic_sections(code, top_k, deps, seen_sigs)
+        # 3d. Semantic search supplement (with LLM-rewritten query)
+        self._log("语义搜索补充（LLM query改写）...")
+        semantic_query = await self.rewrite_query(code, cls, method_signature or "")
+        self._log(f"语义搜索query: {semantic_query[:100]}")
+        semantic_parts = self._build_semantic_sections(semantic_query, top_k, deps, seen_sigs)
         parts.extend(semantic_parts)
 
         # 3e. Test exemplar & usage examples (multi-layer retrieval)
