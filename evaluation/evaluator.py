@@ -36,6 +36,7 @@ class MethodCoverage:
     total_lines: int
     covered_branches: int = 0
     total_branches: int = 0
+    desc: str = ""  # JVM 描述符，用于区分重载方法，例如 (Ljava/lang/Number;)Lcom/google/gson/stream/JsonWriter;
 
 
 @dataclass
@@ -300,17 +301,29 @@ class TestEvaluator:
             else:
                 # 单模块项目
                 test_dirs = [os.path.join(self.project_dir, "src/test/java")]
-            
+
+            # 兼容两类历史产物：
+            # 1) *Generated*.java（当前策略）
+            # 2) *_Test.java（早期批量实验遗留文件，可能触发 -Werror）
+            patterns = ["*Generated*.java", "*_Test.java"]
+            deleted_count = 0
+
             for test_dir in test_dirs:
-                if os.path.exists(test_dir):
-                    # 查找并删除所有 *Generated*.java 文件
-                    pattern = os.path.join(test_dir, "**", "*Generated*.java")
+                if not os.path.exists(test_dir):
+                    continue
+
+                for name_pattern in patterns:
+                    pattern = os.path.join(test_dir, "**", name_pattern)
                     old_files = glob.glob(pattern, recursive=True)
                     for old_file in old_files:
                         try:
                             os.remove(old_file)
-                        except:
+                            deleted_count += 1
+                        except Exception:
                             pass  # 忽略删除失败
+
+            if deleted_count > 0:
+                print(f"  ✓ 已清理旧生成测试文件: {deleted_count} 个")
         except Exception as e:
             print(f"  ! 清理旧文件失败（继续）: {e}")
     
@@ -611,6 +624,7 @@ class TestEvaluator:
                         method_coverages = []
                         for method in cls.findall("method"):
                             method_name = method.get("name", "")
+                            method_desc = method.get("desc", "")
                             method_counters = {c.get("type"): c for c in method.findall("counter")}
                             
                             m_line_missed = int(method_counters.get("LINE", {}).get("missed", 0))
@@ -630,6 +644,7 @@ class TestEvaluator:
                                     total_lines=m_total_lines,
                                     covered_branches=m_branch_covered,
                                     total_branches=m_total_branches,
+                                    desc=method_desc,
                                 ))
                         
                         return CoverageReport(
@@ -672,6 +687,42 @@ class TestEvaluator:
         return sorted(low_cov, key=lambda x: x.line_coverage)
 
 
+def _short_desc(desc: str) -> str:
+    """将 JVM 方法描述符简化为人类可读签名。
+    
+    示例：
+        (Ljava/lang/Number;)Lcom/google/gson/stream/JsonWriter;  -> (Number)
+        (D)Lcom/google/gson/stream/JsonWriter;                   -> (double)
+        (ZLjava/lang/String;)V                                   -> (boolean, String)
+        ()V                                                      -> ()
+    """
+    if not desc or "(" not in desc or ")" not in desc:
+        return ""
+    params_raw = desc[desc.index("(") + 1:desc.index(")")]
+    prims = {"Z": "boolean", "B": "byte", "C": "char", "S": "short",
+             "I": "int", "J": "long", "F": "float", "D": "double", "V": "void"}
+    out = []
+    i = 0
+    while i < len(params_raw):
+        c = params_raw[i]
+        arr = ""
+        while c == "[":
+            arr += "[]"
+            i += 1
+            c = params_raw[i]
+        if c in prims:
+            out.append(prims[c] + arr)
+            i += 1
+        elif c == "L":
+            end = params_raw.index(";", i)
+            cls = params_raw[i + 1:end].split("/")[-1]
+            out.append(cls + arr)
+            i = end + 1
+        else:
+            i += 1
+    return "(" + ", ".join(out) + ")"
+
+
 def print_report(report: EvaluationReport, show_method_coverage: bool = True):
     """打印评估报告
     
@@ -706,12 +757,51 @@ def print_report(report: EvaluationReport, show_method_coverage: bool = True):
         print(f"  方法覆盖率: {report.coverage.method_coverage:.1f}%")
         
         if show_method_coverage and report.coverage.method_coverages:
-            # Show target method coverage prominently
+            # Show target method coverage prominently (with before/after delta if baseline exists)
             target_mc = report.coverage.get_method_coverage(report.target_method)
+            baseline_target_mc = (
+                report.baseline_coverage.get_method_coverage(report.target_method)
+                if report.baseline_coverage else None
+            )
             if target_mc:
                 print(f"\n  ★ 目标方法 [{report.target_method}]:")
-                print(f"    行覆盖率: {target_mc.line_coverage:.1f}% ({target_mc.covered_lines}/{target_mc.total_lines})")
-                print(f"    分支覆盖率: {target_mc.branch_coverage:.1f}% ({target_mc.covered_branches}/{target_mc.total_branches})")
+                if baseline_target_mc:
+                    line_delta = target_mc.line_coverage - baseline_target_mc.line_coverage
+                    branch_delta = target_mc.branch_coverage - baseline_target_mc.branch_coverage
+                    lines_delta = target_mc.covered_lines - baseline_target_mc.covered_lines
+                    branches_delta = target_mc.covered_branches - baseline_target_mc.covered_branches
+                    print(f"    行覆盖率:   {baseline_target_mc.line_coverage:.1f}% → {target_mc.line_coverage:.1f}% ({line_delta:+.1f}%)  "
+                          f"[{baseline_target_mc.covered_lines}/{target_mc.total_lines} → {target_mc.covered_lines}/{target_mc.total_lines}, {lines_delta:+d} 行]")
+                    print(f"    分支覆盖率: {baseline_target_mc.branch_coverage:.1f}% → {target_mc.branch_coverage:.1f}% ({branch_delta:+.1f}%)  "
+                          f"[{baseline_target_mc.covered_branches}/{target_mc.total_branches} → {target_mc.covered_branches}/{target_mc.total_branches}, {branches_delta:+d} 分支]")
+                else:
+                    print(f"    行覆盖率:   {target_mc.line_coverage:.1f}% ({target_mc.covered_lines}/{target_mc.total_lines})")
+                    print(f"    分支覆盖率: {target_mc.branch_coverage:.1f}% ({target_mc.covered_branches}/{target_mc.total_branches})")
+
+            # Show per-method deltas (methods whose coverage actually changed)
+            if report.baseline_coverage and report.baseline_coverage.method_coverages:
+                # 用 (name, desc) 作为唯一 key，正确区分重载方法
+                baseline_map = {(mc.method_name, mc.desc): mc for mc in report.baseline_coverage.method_coverages}
+                changed = []
+                for mc in report.coverage.method_coverages:
+                    base = baseline_map.get((mc.method_name, mc.desc))
+                    if base is None:
+                        # 方法在 baseline 中不存在（新增方法），跳过或标记
+                        continue
+                    line_d = mc.line_coverage - base.line_coverage
+                    branch_d = mc.branch_coverage - base.branch_coverage
+                    if abs(line_d) > 1e-6 or abs(branch_d) > 1e-6:
+                        changed.append((mc, base, line_d, branch_d))
+                if changed:
+                    print(f"\n  方法级覆盖率变化 ({len(changed)} 个方法有变化):")
+                    for mc, base, line_d, branch_d in sorted(changed, key=lambda x: -x[2]):
+                        marker = " ★" if mc.method_name == report.target_method else ""
+                        sig = _short_desc(mc.desc)
+                        label = f"{mc.method_name}{sig}"
+                        print(f"    · {label:50s} line: {base.line_coverage:.0f}% → {mc.line_coverage:.0f}% ({line_d:+.1f}%)  "
+                              f"branch: {base.branch_coverage:.0f}% → {mc.branch_coverage:.0f}% ({branch_d:+.1f}%){marker}")
+                else:
+                    print(f"\n  方法级覆盖率变化: 无方法发生变化")
 
             # Show full method-level panorama
             print(f"\n  方法级覆盖率全景 ({len(report.coverage.method_coverages)} 个方法):")
@@ -731,7 +821,9 @@ def print_report(report: EvaluationReport, show_method_coverage: bool = True):
                 else:
                     icon = "○"
                 branch_str = f"  branch={mc.branch_coverage:.0f}% ({mc.covered_branches}/{mc.total_branches})" if mc.total_branches > 0 else ""
-                print(f"    {icon} {mc.method_name:40s} line={mc.covered_lines}/{mc.total_lines} ({mc.line_coverage:.0f}%){branch_str}{marker}")
+                sig = _short_desc(mc.desc)
+                label = f"{mc.method_name}{sig}"
+                print(f"    {icon} {label:50s} line={mc.covered_lines}/{mc.total_lines} ({mc.line_coverage:.0f}%){branch_str}{marker}")
     
     print("\n" + "=" * 60)
 

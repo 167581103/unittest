@@ -1,124 +1,13 @@
 # LLM 提示词配置
 
-# ============ Phase 1: Method Understanding ============
+# ============ Phase 1: 方法理解 + 覆盖分析 + 测试用例设计（一次 LLM 调用）============
 
-# Step 1: Understand what the method does
-method_understanding: |
-  你是一位资深Java开发工程师。请仔细阅读以下Java方法的源代码，给出清晰、准确的功能解读。
-
-  被测类: {full_class_name}
-  方法签名: {method_signature}
-  
-  源代码:
-  ```java
-  {method_code}
-  ```
-
-  相关上下文（类结构、依赖方法等）:
-  {context}
-
-  请从以下几个维度进行分析：
-  1. **功能概述**：用一段话概括这个方法的核心功能和职责
-  2. **输入输出**：描述方法的参数含义、返回值含义、可能抛出的异常
-  3. **核心逻辑**：列出方法内部的关键处理步骤和分支逻辑
-  4. **状态变更**：方法执行后会修改哪些对象状态（字段、参数等）
-  5. **依赖关系**：方法依赖了哪些外部方法/字段/类型
-
-  请用中文回答，条理清晰。
-
-# Step 2: Analyze test coverage points
-coverage_analysis: |
-  你是一位测试架构师。基于以下方法的功能解读，分析需要覆盖的测试点和测试面。
-
-  被测类: {full_class_name}
-  方法签名: {method_signature}
-  
-  源代码:
-  ```java
-  {method_code}
-  ```
-
-  方法功能解读:
-  {method_understanding}
-
-  相关上下文:
-  {context}
-
-  请从以下维度全面分析需要覆盖的测试点：
-
-  1. **正常流程覆盖**：列出所有正常执行路径，每条路径需要什么输入条件
-  2. **分支覆盖**：列出代码中所有 if/else/switch 分支，每个分支的触发条件
-  3. **边界条件**：列出所有边界值场景（空值、极值、临界值等）
-  4. **异常路径**：列出所有可能抛出异常的场景和异常类型
-  5. **状态依赖**：列出方法行为依赖的前置状态条件
-  6. **覆盖优先级**：按重要性对测试点排序（高/中/低）
-
-  请用中文回答，每个测试点都要具体、可操作。
-
-# Step 3: Design test cases
-test_case_design: |
-  你是一位测试用例设计专家。基于以下方法的功能解读和覆盖分析，设计具体的测试用例。
-
-  被测类: {full_class_name}
-  方法签名: {method_signature}
-  
-  源代码:
-  ```java
-  {method_code}
-  ```
-
-  方法功能解读:
-  {method_understanding}
-
-  覆盖分析:
-  {coverage_analysis}
-
-  相关上下文（可用的公共API）:
-  {context}
-
-  请设计完整的测试用例列表，每个用例包含：
-
-  返回严格的JSON数组格式：
-  ```json
-  [
-    {{
-      "id": "TC01",
-      "name": "test_描述性名称",
-      "description": "测试目的描述",
-      "category": "normal|boundary|exception|state",
-      "priority": "high|medium|low",
-      "setup": "前置条件和对象构造方式",
-      "input": "具体的输入数据/操作步骤",
-      "expected_output": "预期的返回值或行为",
-      "assertion_type": "assertEquals|assertTrue|assertThrows|...",
-      "coverage_target": "覆盖的代码行/分支描述"
-    }}
-  ]
-  ```
-
-  要求：
-  1. 测试用例数量在 5-12 个之间，确保覆盖所有关键路径
-  2. 每个用例的 name 必须是合法的Java方法名（以test开头，使用驼峰命名）
-  3. setup 和 input 要足够具体，能直接转化为代码
-  4. 只使用上下文中 "Available Public Methods" 列出的公共API
-  5. 优先覆盖高优先级的测试点
-  6. ⚠️ 严禁使用上下文中未列出的方法，不要猜测API
-  7. ⚠️ 如果上下文中有 "VISIBILITY WARNING"，说明所有字段都是 private 的
-     - setup 中必须通过公共构造函数和公共方法来构造测试状态
-     - 例如：通过 new JsonReader(new StringReader(jsonString)) 构造输入
-     - 然后通过 beginArray()/beginObject() 等公共方法导航到正确位置
-     - 绝对不要在 setup 中使用反射、Mock子类或直接设置私有字段
-  8. 如果上下文中有 "Existing Test Patterns"，请参考其中的测试模式来设计 setup 和 input
-
-# ============ 合并 Phase: 一次LLM调用完成理解+覆盖分析+用例设计 ============
-
-# 合并版：将原来的3个Phase合并为1次LLM调用，节省2次API调用
 analyze_all_in_one: |
   你是一位资深Java测试工程师。请仔细阅读以下Java方法的源代码，完成三个任务：功能解读、覆盖分析、测试用例设计。
 
   被测类: {full_class_name}
   方法签名: {method_signature}
-  
+
   源代码:
   ```java
   {method_code}
@@ -173,56 +62,84 @@ analyze_all_in_one: |
      - 绝对不要在 setup 中使用反射、Mock子类或直接设置私有字段
   7. 如果上下文中有 "Existing Test Patterns"，请参考其中的测试模式
 
-# ============ Phase 2: Test Code Generation ============
+# ============ Phase 2: 骨架 + 逐方法 生成（避免长输出截断）============
 
-# Unit test generation (enhanced with test case design)
-test_system: |
-  你是Java单元测试专家。根据预先设计好的测试用例，生成高质量的JUnit 4测试代码。
+# 只生成测试类骨架：package / imports / class 声明 / 共享字段 / @Before
+# 不包含任何 @Test 方法，专门用来规避 LLM 长输出被截断的问题。
+test_skeleton: |
+  你是Java单元测试专家。请只生成JUnit 4测试类的**骨架**，不要生成任何 @Test 方法。
 
-  要求：
-  1. **严格按照测试用例设计实现**，每个测试用例对应一个@Test方法
-  2. 每个测试方法都要有明确的断言来验证行为
-  3. 包含所有必要的import语句，特别是：
-     - 被测类：{full_class_name}
-     - java.io.EOFException（如涉及流操作）
-  4. 只使用公共API，不访问私有成员
-  5. 测试类名必须是：{test_class_name}
-  6. 避免空测试方法，每个@Test都要有实质内容
-  7. 根据方法签名和上下文正确使用相关的公共API
-  8. 文件第一行必须是正确的package声明：package {package_name};
-  
-  ⚠️ 严禁使用上下文中未列出的方法！
-  - 只能使用 "Available Public Methods" 中列出的方法
-  - 禁止幻想或猜测任何未在上下文中出现的API
-  - 严格遵守被测类的实际公共API，不要根据经验假设方法存在
-
-  ⚠️ 严禁创建 Mock 子类或使用反射访问私有字段！
-  - 不要创建继承被测类的 Mock/Stub 内部类
-  - 不要通过反射设置 private 字段（如 peeked, buffer, pos 等）
-  - 正确做法：通过构造函数传入合适的输入数据（如 JSON 字符串），然后通过公共API导航到目标状态
-  - 如果上下文中有 "Existing Test Patterns" 部分，请严格参照其中的代码模式来编写测试
-
-  {context}
-
-test_user: |
   被测类: {full_class_name}
-  方法: {method_signature}
-  代码:
+  方法签名: {method_signature}
+  测试类名: {test_class_name}
+  包名: {package_name}
+
+  方法源代码（用于理解依赖）:
   ```java
   {method_code}
   ```
 
-  测试用例设计:
-  {test_cases}
+  相关上下文:
+  {context}
 
-  请严格按照上述测试用例设计，生成完整的JUnit测试类 {test_class_name}。确保：
-  - 第一行必须是：package {package_name};
-  - 导入被测类：{full_class_name}
-  - 类名为：{test_class_name}
-  - 每个测试用例对应一个@Test方法，方法名与用例的name字段一致
-  - 每个测试方法都有实际的测试逻辑和断言
-  - 只使用上下文中 "Available Public Methods" 列出的方法
-  - 按照用例的 setup、input、expected_output 和 assertion_type 来实现
+  ⚠️ 严格要求：
+  1. 第一行必须是：package {package_name};
+  2. 导入所有必要的类型，至少包含：
+     - 被测类：import {full_class_name};
+     - JUnit 4：import org.junit.Test; import org.junit.Before; import static org.junit.Assert.*;
+     - 测试代码中涉及的其他类型（根据方法签名和上下文推断）
+  3. 声明一个 public 类：public class {test_class_name} {{ ... }}
+  4. 如果多个测试用例需要共享的字段（如被测对象），在类里声明为字段
+  5. 如果需要公共初始化逻辑，写一个 @Before 方法 setUp() 或类似
+  6. **绝对不要**生成任何 @Test 方法，我会单独生成每个测试方法后再插入到这个骨架里
+  7. 在类体内保留一行占位注释：`// __TEST_METHODS_PLACEHOLDER__`，后续会替换为生成的测试方法
+  8. 只使用上下文中 "Available Public Methods" 列出的公共API，严禁猜测API
+  9. 严禁使用 AssertJ、Google Truth；只使用 JUnit 4 的 org.junit.Assert.*
+
+  输出格式：只返回一个完整的 Java 代码块，用 ```java ... ``` 包裹，不要任何其他解释文字。
+
+# 单个测试方法生成：每次只生成一个 @Test 方法，避免长输出截断
+test_single_method: |
+  你是Java单元测试专家。请只生成**一个**JUnit 4 测试方法（一个 @Test 方法），不要生成任何其他内容。
+
+  被测类: {full_class_name}
+  被测方法: {method_signature}
+  方法源代码:
+  ```java
+  {method_code}
+  ```
+
+  测试类已有骨架（仅供参考，不要重复生成 package/imports/class 声明）:
+  ```java
+  {skeleton}
+  ```
+
+  相关上下文（可用的公共API）:
+  {context}
+
+  本次要实现的测试用例（JSON）:
+  ```json
+  {test_case}
+  ```
+
+  ⚠️ 严格要求：
+  1. 只返回**一个** @Test 方法，不要 package、不要 import、不要 class 声明
+  2. 方法名必须严格等于用例中的 `name` 字段
+  3. 方法签名形如：`@Test` 换行后 `public void <name>() throws Exception {{ ... }}`
+     - 其中 `<name>` 用上面 JSON 里的 name 字段替换
+     - 如果方法可能抛受检异常，一律声明 `throws Exception`
+  4. 严格按照用例的 setup → input → expected_output → assertion_type 实现
+  5. 只使用上下文中 "Available Public Methods" 列出的公共API，禁止幻想或使用反射
+  6. 只使用 JUnit 4 的 `org.junit.Assert.*`，禁止 AssertJ / Google Truth / assertThat
+  7. 如果骨架里声明了共享字段（如 `gson`、`reader` 等）和 @Before，请直接使用，不要重复初始化
+  8. 方法体必须有实际断言（assertEquals / assertTrue / assertThrows 等），不能是空方法
+  9. **重载歧义**：被测方法参数类型见 `method_signature`。调用时必须让参数类型**精确匹配**该签名，避免Java重载歧义：
+     - 如果签名是 `value(Number)`：传 null 必须写 `(Number) null`；传字面量要用包装类，如 `Integer.valueOf(123)`、`Double.valueOf(3.14)`、`Long.valueOf(123L)`；传 `Double.POSITIVE_INFINITY` 这类本身是 double 的值，要写 `Double.valueOf(Double.POSITIVE_INFINITY)`
+     - 如果签名是 `value(long)` / `value(double)` / `value(boolean)` / `value(String)`：用对应字面量或强转，例如 `123L`、`(double) 1`、`(String) null`
+     - 普适原则：**当被测类存在同名重载时，所有传入 null 的地方都必须用 cast 指明类型**，例如 `(String) null`、`(Number) null`、`(Object) null`
+  10. 异常断言优先用 try-catch + fail 模式（JUnit 4.12 兼容），避免使用 `assertThrows`（它在 JUnit 4.13 才有）
+
+  输出格式：只返回一个 Java 代码块，用 ```java ... ``` 包裹，代码块里只有这一个 @Test 方法。
 
 # ============ Agentic RAG ============
 

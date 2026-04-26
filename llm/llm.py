@@ -94,7 +94,7 @@ def embed(texts: List[str], retries: int = 3) -> List[List[float]]:
 async def chat(prompt: str, system: str = None, **kw) -> str:
     """与LLM对话（异步接口，内部使用同步客户端）"""
     client = _get_chat_client()
-    
+
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
@@ -203,32 +203,19 @@ def _parse_test_cases(raw: str) -> List[Dict]:
     return []
 
 
-def format_test_cases_for_prompt(test_cases: List[Dict]) -> str:
-    """Format structured test cases into a readable string for the generation prompt."""
-    if not test_cases:
-        return "No test cases designed."
-    return json.dumps(test_cases, indent=2, ensure_ascii=False)
-
-
 # ============ 测试生成 ============
 
 
 def _extract_code(text: str) -> str:
-    """Extract Java code from LLM response (may be wrapped in markdown fences)."""
+    """Extract Java code from LLM response (may be wrapped in markdown fences).
+
+    注意：此函数只剥 markdown 围栏，不做大括号自动补全——
+    因为那会掩盖模型被长度截断的情况。截断检测交给调用方语义层做。
+    """
     matches = re.findall(r"```(?:java)?\n(.*?)```", text, re.DOTALL)
     code = "\n\n".join(matches) if matches else text
-    # Remove any remaining markdown fence lines
     code = re.sub(r'^```(?:java)?\s*$', '', code, flags=re.MULTILINE)
     code = re.sub(r'^```\s*$', '', code, flags=re.MULTILINE)
-    # Fix brace balance
-    if code.count('{') > code.count('}'):
-        code += '\n}'
-    elif code.count('}') > code.count('{'):
-        # Remove trailing extra closing braces
-        lines = code.rstrip().split('\n')
-        while lines and lines[-1].strip() == '}' and code.count('}') > code.count('{'):
-            lines.pop()
-            code = '\n'.join(lines)
     return code.strip()
 
 
@@ -528,60 +515,110 @@ async def generate_test(
     package_name: str = None,
     test_cases: List[Dict] = None,
 ) -> Dict:
-    """生成单元测试
-    
-    Args:
-        class_name: 被测类简单名（如 JsonReader）
-        method_signature: 方法签名
-        method_code: 方法代码
-        output_path: 输出路径
-        context: RAG检索的上下文
-        test_class_name: 生成的测试类名（如 JsonReader_skipValue_Test），默认为 {class_name}Test
-        full_class_name: 被测类完整包名（如 com.google.gson.stream.JsonReader），用于import
-        test_cases: 预先设计的测试用例列表（来自 analyze_method 的输出）
+    """生成单元测试（骨架 + 逐方法 模式，规避长输出截断）
+
+    生成策略：
+      1. 先用一个小 prompt 只生成“测试类骨架”（package/imports/class/fields/@Before），
+         输出量很小，不会被 max_tokens 截断。
+      2. 对每个 test case 单独调用一次 LLM，每次只生成一个 @Test 方法，
+         每次输出都很短（几十到一两百行），彻底规避截断。
+      3. 把骨架里的占位符替换成所有拼接起来的 @Test 方法，再走 _fix_imports 落盘。
+
+    对上游完全透明：签名与返回 dict 的结构不变。
     """
     test_class_name = test_class_name or f"{class_name}Test"
-    # Derive package from full_class_name if not provided
     if package_name is None and full_class_name and "." in full_class_name:
         package_name = ".".join(full_class_name.split(".")[:-1])
     package_name = package_name or ""
 
-    # Format test cases for prompt
-    test_cases_str = format_test_cases_for_prompt(test_cases) if test_cases else "No pre-designed test cases. Design appropriate test cases based on the method."
-
-    system = PROMPTS["test_system"].format(
-        class_name=class_name,
-        test_class_name=test_class_name,
-        full_class_name=full_class_name or class_name,
-        package_name=package_name,
-        context=context or "无上下文"
-    )
-    prompt = PROMPTS["test_user"].format(
-        class_name=class_name,
-        test_class_name=test_class_name,
-        method_signature=method_signature,
-        method_code=method_code,
-        full_class_name=full_class_name or class_name,
-        package_name=package_name,
-        test_cases=test_cases_str,
-    )
+    if not test_cases:
+        return {
+            "success": False,
+            "error": "test_cases is required (run analyze_method first to design test cases)",
+        }
 
     try:
-        resp = await chat(prompt, system, temperature=0.7, max_tokens=8000)
-        code = _extract_code(resp)
+        # ── Step 1: 生成骨架 ─────────────────────────────────────────
+        skeleton_prompt = PROMPTS["test_skeleton"].format(
+            class_name=class_name,
+            test_class_name=test_class_name,
+            full_class_name=full_class_name or class_name,
+            package_name=package_name,
+            method_signature=method_signature,
+            method_code=method_code,
+            context=context or "无上下文",
+        )
+        print(f"  [LLM] Generating skeleton for {test_class_name}...")
+        skeleton_resp = await chat(skeleton_prompt, temperature=0.3, max_tokens=2000)
+        skeleton_code = _extract_code(skeleton_resp)
 
-        # ★ 截断检测：如果 LLM 输出被 token 上限截断，生成的代码不完整，
-        # 不应写入文件（写了只会让编译器报 "reached end of file" 错误）。
-        # 判断依据：代码里没有 class 定义，或者大括号不平衡。
-        import re as _re
-        has_class = bool(_re.search(r'\bclass\s+\w+', code))
-        brace_balanced = code.count('{') == code.count('}')
-        if not has_class or not brace_balanced:
+        # 确保占位符存在；若模型没写，就强行插入到最后一个 `}` 之前
+        placeholder = "// __TEST_METHODS_PLACEHOLDER__"
+        if placeholder not in skeleton_code:
+            last_brace = skeleton_code.rfind("}")
+            if last_brace == -1:
+                return {
+                    "success": False,
+                    "error": "Skeleton generation failed: no class body found",
+                    "truncated": True,
+                }
+            skeleton_code = (
+                skeleton_code[:last_brace]
+                + f"\n    {placeholder}\n"
+                + skeleton_code[last_brace:]
+            )
+
+        # ── Step 2: 逐个 test case 生成 @Test 方法 ────────────────────
+        method_snippets: List[str] = []
+        failed_cases: List[str] = []
+        for idx, case in enumerate(test_cases, 1):
+            case_name = case.get("name", f"test_case_{idx}") if isinstance(case, dict) else f"test_case_{idx}"
+            print(f"  [LLM] Generating test method {idx}/{len(test_cases)}: {case_name}")
+            try:
+                method_prompt = PROMPTS["test_single_method"].format(
+                    class_name=class_name,
+                    test_class_name=test_class_name,
+                    full_class_name=full_class_name or class_name,
+                    package_name=package_name,
+                    method_signature=method_signature,
+                    method_code=method_code,
+                    skeleton=skeleton_code,
+                    context=context or "无上下文",
+                    test_case=json.dumps(case, ensure_ascii=False, indent=2),
+                )
+                m_resp = await chat(method_prompt, temperature=0.4, max_tokens=2000)
+                m_code = _extract_single_method(m_resp)
+                if m_code:
+                    method_snippets.append(m_code)
+                else:
+                    failed_cases.append(case_name)
+                    print(f"  [LLM] Warning: failed to extract method body for {case_name}")
+            except Exception as e:
+                failed_cases.append(case_name)
+                print(f"  [LLM] Warning: case {case_name} failed: {e}")
+
+        if not method_snippets:
             return {
                 "success": False,
-                "error": f"LLM output truncated (has_class={has_class}, brace_balanced={brace_balanced})",
+                "error": f"All test methods failed to generate (failed: {failed_cases})",
+                "truncated": False,
+            }
+
+        # ── Step 3: 拼装骨架 + 所有测试方法 ──────────────────────────
+        joined_methods = "\n\n    ".join(method_snippets)
+        code = skeleton_code.replace(placeholder, joined_methods)
+
+        # 基本完整性校验
+        has_class = bool(re.search(r'\bclass\s+\w+', code))
+        if not has_class:
+            return {
+                "success": False,
+                "error": "Assembled code missing class declaration",
                 "truncated": True,
             }
+        # 粗暴修一下括号平衡
+        if code.count('{') > code.count('}'):
+            code += '\n}'
 
         code = _fix_imports(code)
 
@@ -589,9 +626,43 @@ async def generate_test(
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(code)
 
-        return {"success": True, "output_path": output_path}
+        return {
+            "success": True,
+            "output_path": output_path,
+            "methods_generated": len(method_snippets),
+            "methods_failed": failed_cases,
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def _extract_single_method(text: str) -> str:
+    """从 LLM 响应中抽取一个 @Test 方法代码块。
+
+    返回去除 markdown 围栏后的纯 Java 代码。若抽不到，则返回空字符串。
+    """
+    # 优先取 fenced code block
+    matches = re.findall(r"```(?:java)?\n(.*?)```", text, re.DOTALL)
+    if matches:
+        body = "\n\n".join(matches).strip()
+    else:
+        body = text.strip()
+
+    # 去掉可能出现的 package / import / class 声明（防止模型不听话）
+    body = re.sub(r'^\s*package\s+[^;]+;\s*$', '', body, flags=re.MULTILINE)
+    body = re.sub(r'^\s*import\s+[^;]+;\s*$', '', body, flags=re.MULTILINE)
+    # 去除可能的 class 包裹：`public class Foo {  ...  }`
+    cls_match = re.search(r'class\s+\w+\s*\{(.*)\}\s*$', body, re.DOTALL)
+    if cls_match:
+        body = cls_match.group(1).strip()
+
+    # 必须包含 @Test 且大括号平衡，否则视为提取失败
+    if '@Test' not in body:
+        return ""
+    if body.count('{') != body.count('}'):
+        return ""
+
+    return body.strip()
 
 
 # ============ 批量生成 ============

@@ -19,7 +19,7 @@ from pydantic import BaseModel
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from rag import CodeRAG, AgenticRAG
-from llm import generate_test, chat, analyze_method, format_test_cases_for_prompt, PROMPTS
+from llm import generate_test, chat, analyze_method, PROMPTS
 from evaluation.evaluator import TestEvaluator, print_report
 
 app = FastAPI(title="UT-Gen Dashboard")
@@ -290,29 +290,20 @@ async def run_pipeline(req: RunRequest):
         # ---- Step 3: Generate Test (based on test case design) ----
         await state.log("generate", "start")
 
-        # Build the prompts that will be sent to LLM (for display)
-        system_prompt = PROMPTS["test_system"].format(
+        # Build the skeleton prompt that will be sent to LLM (for display only).
+        # Actual generation happens inside generate_test() which uses skeleton + per-method strategy.
+        skeleton_prompt = PROMPTS["test_skeleton"].format(
             class_name=req.target_class,
             test_class_name=test_class_name,
             full_class_name=req.full_class_name,
             package_name=package_name,
+            method_signature=req.method_signature,
+            method_code=req.method_code,
             context=context or "No context",
         )
 
-        test_cases_str = format_test_cases_for_prompt(analysis["test_cases"]) if analysis["test_cases"] else "No pre-designed test cases."
-        user_prompt = PROMPTS["test_user"].format(
-            class_name=req.target_class,
-            test_class_name=test_class_name,
-            method_signature=req.method_signature,
-            method_code=req.method_code,
-            full_class_name=req.full_class_name,
-            package_name=package_name,
-            test_cases=test_cases_str,
-        )
-
         await state.log("generate", "prompts", {
-            "system_prompt": system_prompt,
-            "user_prompt": user_prompt,
+            "skeleton_prompt": skeleton_prompt,
         })
 
         output_dir = "/tmp/generated_tests"
@@ -345,7 +336,7 @@ async def run_pipeline(req: RunRequest):
             "success": gen_result["success"],
             "error": gen_result.get("error"),
             "code": generated_code,
-            "prompts": {"system": system_prompt, "user": user_prompt},
+            "prompts": {"skeleton": skeleton_prompt},
         }
 
         if not gen_result["success"]:

@@ -714,6 +714,8 @@ def resolve_symbols_from_rag(symbols: List[str], code_rag) -> str:
 
 # ============ Layer 2: LLM-based fix ============
 
+_LLM_CONTEXT_LIMIT = 3000
+
 _FIX_PROMPT = """You are a Java test code fixer. The following test code failed to compile.
 
 ## Compile Errors
@@ -758,7 +760,7 @@ async def llm_fix(code: str, errors: List[dict], context: str = "",
         errors=error_text,
         code=code,
         api_info=api_info or "No API information available.",
-        context=context[:3000] if context else "No additional context.",
+        context=context[:_LLM_CONTEXT_LIMIT] if context else "No additional context.",
     )
 
     resp = await chat(prompt, temperature=0.3, max_tokens=4000)
@@ -797,6 +799,76 @@ async def llm_fix(code: str, errors: List[dict], context: str = "",
         return code
 
     return extracted
+
+
+def _collect_symbols_for_rag(classified: dict) -> List[str]:
+    """Collect candidate symbols for legacy CodeRAG fallback resolution."""
+    symbols: List[str] = []
+    symbols.extend(classified.get("cannot_find_symbol", []))
+    symbols.extend(classified.get("not_public", []))
+
+    for err in classified.get("incompatible_types", []):
+        type_match = re.search(r'cannot be converted to ([\w.]+)', err.get('message', ''))
+        if type_match:
+            symbols.append(type_match.group(1).split('.')[-1])
+
+    for err in classified.get("ambiguous_reference", []):
+        ref_match = re.search(r'reference to (\w+) is ambiguous', err.get('message', ''))
+        if ref_match:
+            symbols.append(ref_match.group(1))
+
+    return list(dict.fromkeys(sym for sym in symbols if sym))
+
+
+def _resolve_api_info_with_fallback(classified: dict, code_rag=None, agentic_rag=None) -> str:
+    """Resolve API info via legacy CodeRAG when AgenticRAG does not return context."""
+    all_symbols = _collect_symbols_for_rag(classified)
+    if not all_symbols:
+        return ""
+
+    rag_instance = code_rag or (
+        agentic_rag.rag if agentic_rag and hasattr(agentic_rag, 'rag') else None
+    )
+    if not rag_instance:
+        return ""
+
+    return resolve_symbols_from_rag(all_symbols, rag_instance)
+
+
+def _compose_effective_context(
+    base_context: str,
+    fresh_context: str,
+    max_chars: int = _LLM_CONTEXT_LIMIT,
+) -> str:
+    """Compose context with both fresh error-driven and baseline retrieval signal."""
+    base = (base_context or "").strip()
+    fresh = (fresh_context or "").strip()
+
+    if not fresh and not base:
+        return ""
+    if not fresh:
+        return base[:max_chars]
+    if not base:
+        return fresh[:max_chars]
+
+    if fresh == base or base in fresh:
+        return fresh[:max_chars]
+    if fresh in base:
+        return base[:max_chars]
+
+    fresh_budget = max(1, int(max_chars * 0.7))
+    base_budget = max_chars - fresh_budget
+
+    fresh_part = fresh[:fresh_budget]
+    base_part = base[:base_budget]
+
+    merged = (
+        "=== Fresh Error-Focused Context ===\n"
+        f"{fresh_part}\n\n"
+        "=== Baseline Retrieval Context ===\n"
+        f"{base_part}"
+    )
+    return merged[:max_chars]
 
 
 def _needs_rag_retrieval(classified: dict, errors: List[dict]) -> Tuple[bool, str]:
@@ -906,6 +978,7 @@ async def fix_compile_errors(
     current_code = code
     current_output = compile_output
     prev_error_count = float('inf')
+    rolling_context = (context or "").strip()
 
     for attempt in range(1, max_retries + 1):
         print(f"  [Fix Loop] Attempt {attempt}/{max_retries}")
@@ -1016,32 +1089,27 @@ async def fix_compile_errors(
             # is unavailable or returned nothing, AND we still want RAG)
             api_info = ""
             if need_rag and not new_context:
-                all_symbols = list(set(
-                    classified["cannot_find_symbol"]
-                    + classified.get("not_public", [])
-                ))
-                for err in classified["incompatible_types"]:
-                    type_match = re.search(r'cannot be converted to ([\w.]+)', err.get('message', ''))
-                    if type_match:
-                        all_symbols.append(type_match.group(1).split('.')[-1])
-                for err in classified.get("ambiguous_reference", []):
-                    ref_match = re.search(r'reference to (\w+) is ambiguous', err.get('message', ''))
-                    if ref_match:
-                        all_symbols.append(ref_match.group(1))
-                rag_instance = code_rag or (agentic_rag.rag if agentic_rag and hasattr(agentic_rag, 'rag') else None)
-                if all_symbols and rag_instance:
-                    api_info = resolve_symbols_from_rag(all_symbols, rag_instance)
-                    if api_info:
-                        fix_log.append(f"  RAG resolved: {len(api_info)} chars of API info")
+                api_info = _resolve_api_info_with_fallback(
+                    re_classified,
+                    code_rag=code_rag,
+                    agentic_rag=agentic_rag,
+                )
+                if api_info:
+                    fix_log.append(f"  RAG resolved: {len(api_info)} chars of API info")
 
-            # Merge: new_context from AgenticRAG replaces the stale context;
-            # api_info from legacy resolution supplements it if present.
-            effective_context = new_context or context
+            # Keep both fresh error-focused context and baseline context to
+            # avoid losing useful historical signals in later rounds.
+            effective_context = _compose_effective_context(rolling_context, new_context)
+            rolling_context = effective_context or rolling_context
 
             print(f"  [Fix Loop] Applying LLM fix ({len(remaining_errors)} remaining errors)...")
             fix_log.append(f"  LLM fix applied ({len(remaining_errors)} errors)")
-            current_code = await llm_fix(current_code, remaining_errors, effective_context,
-                                         api_info=api_info)
+            current_code = await llm_fix(
+                current_code,
+                remaining_errors,
+                effective_context,
+                api_info=api_info,
+            )
             from llm.llm import _fix_imports
             current_code = _fix_imports(current_code)
 

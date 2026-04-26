@@ -47,7 +47,7 @@ class AgenticRAG:
     # Maximum total context characters before truncation warning
     _CONTEXT_SOFT_LIMIT = 12_000
 
-    def __init__(self, index_path: str, test_dir: str = None, verbose: bool = True):
+    def __init__(self, index_path: str, test_dir: str = None, verbose: bool = False):
         self.rag = CodeRAG(index_path)
         self.test_dir = test_dir
         self.verbose = verbose
@@ -1061,7 +1061,7 @@ class AgenticRAG:
         """Retrieve and assemble context for the given code snippet."""
         cls = cls or target_class or ""
 
-        print("\n[Agentic RAG] 开始智能检索...")
+        self._log("开始智能检索...")
 
         # ── Step 1: LLM dependency analysis ──────────────────────────────
         deps = await self.analyze_dependencies(code, cls)
@@ -1171,15 +1171,16 @@ class AgenticRAG:
             )
 
         # ── Step 5: Print retrieval summary ──────────────────────────────
-        print("\n[Agentic RAG] 检索总结:")
-        print(f"  ✓ 找到: {len(retrieval_log['found'])} 项")
-        for item in retrieval_log["found"]:
-            print(f"    - {item}")
-        if retrieval_log["not_found"]:
-            print(f"  ✗ 未找到: {len(retrieval_log['not_found'])} 项")
-            for item in retrieval_log["not_found"]:
+        if self.verbose:
+            print("\n[Agentic RAG] 检索总结:")
+            print(f"  ✓ 找到: {len(retrieval_log['found'])} 项")
+            for item in retrieval_log["found"]:
                 print(f"    - {item}")
-        print(f"  📄 上下文总长度: {len(context)} chars")
+            if retrieval_log["not_found"]:
+                print(f"  ✗ 未找到: {len(retrieval_log['not_found'])} 项")
+                for item in retrieval_log["not_found"]:
+                    print(f"    - {item}")
+            print(f"  📄 上下文总长度: {len(context)} chars")
 
         return context
 
