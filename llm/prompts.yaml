@@ -141,6 +141,49 @@ test_single_method: |
 
   输出格式：只返回一个 Java 代码块，用 ```java ... ``` 包裹，代码块里只有这一个 @Test 方法。
 
+# ============ 消融实验：一步式生成（对比两步式）============
+
+# 直接让 LLM 一次性生成完整测试类（package + imports + class + 所有 @Test 方法）。
+# 用于和 test_skeleton + test_single_method 的两步式生成做对比实验。
+test_oneshot: |
+  你是Java单元测试专家。请一次性生成**一个完整的** JUnit 4 测试类，包含 package、imports、class 声明以及所有 @Test 方法。
+
+  被测类: {full_class_name}
+  方法签名: {method_signature}
+  测试类名: {test_class_name}
+  包名: {package_name}
+
+  方法源代码:
+  ```java
+  {method_code}
+  ```
+
+  相关上下文（可用的公共API）:
+  {context}
+
+  待覆盖的测试用例列表（JSON 数组）:
+  ```json
+  {test_cases}
+  ```
+
+  ⚠️ 严格要求：
+  1. 第一行必须是：package {package_name};
+  2. 导入所有必要的类型，至少包含：
+     - 被测类：import {full_class_name};
+     - JUnit 4：import org.junit.Test; import org.junit.Before; import static org.junit.Assert.*;
+     - 代码中涉及的其他类型
+  3. 声明 public 类：public class {test_class_name} {{ ... }}
+  4. 对上面列出的**每一个**测试用例，生成一个 @Test 方法：
+     - 方法名必须严格等于用例 JSON 里的 `name` 字段
+     - 签名：`@Test` 换行 `public void <name>() throws Exception {{ ... }}`
+     - 严格按照 setup → input → expected_output → assertion_type 实现
+  5. 只使用上下文中 "Available Public Methods" 列出的公共API，严禁幻想或使用反射
+  6. 只使用 JUnit 4 的 `org.junit.Assert.*`，禁止 AssertJ / Google Truth / assertThat
+  7. 异常断言优先用 try-catch + fail 模式（JUnit 4.12 兼容），避免 assertThrows
+  8. **重载歧义**：当被测类存在同名重载时，所有传入 null 的地方都必须用 cast 指明类型，例如 `(String) null`、`(Number) null`；字面量要用包装类（`Integer.valueOf(123)` 等）
+
+  输出格式：只返回**一个**完整的 Java 代码块，用 ```java ... ``` 包裹，不要任何额外解释文字。
+
 # ============ Agentic RAG ============
 
 # Query改写：将方法代码转化为更好的检索查询

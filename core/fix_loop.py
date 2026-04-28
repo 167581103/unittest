@@ -219,19 +219,40 @@ _COMMON_STD_IMPORTS: Dict[str, str] = {
     # java.util.stream
     "Collectors": "java.util.stream.Collectors",
     "Stream": "java.util.stream.Stream",
-    # JUnit 4
-    "After": "org.junit.After",
-    "Assume": "org.junit.Assume",
-    "Before": "org.junit.Before",
-    "Ignore": "org.junit.Ignore",
-    "Rule": "org.junit.Rule",
-    "Test": "org.junit.Test",
-    # JUnit 4 rules/runners
-    "ExpectedException": "org.junit.rules.ExpectedException",
-    "TemporaryFolder": "org.junit.rules.TemporaryFolder",
-    "RunWith": "org.junit.runner.RunWith",
-    "Parameterized": "org.junit.runners.Parameterized",
 }
+
+# ─── JUnit 约定形 import——按版本拆分 ───────────────────
+_JUNIT4_IMPORTS: Dict[str, str] = {
+    "After":             "org.junit.After",
+    "Assume":            "org.junit.Assume",
+    "Before":            "org.junit.Before",
+    "BeforeClass":       "org.junit.BeforeClass",
+    "AfterClass":        "org.junit.AfterClass",
+    "Ignore":            "org.junit.Ignore",
+    "Rule":              "org.junit.Rule",
+    "Test":              "org.junit.Test",
+    "ExpectedException": "org.junit.rules.ExpectedException",
+    "TemporaryFolder":   "org.junit.rules.TemporaryFolder",
+    "RunWith":           "org.junit.runner.RunWith",
+    "Parameterized":     "org.junit.runners.Parameterized",
+}
+
+_JUNIT5_IMPORTS: Dict[str, str] = {
+    "Test":        "org.junit.jupiter.api.Test",
+    "BeforeEach":  "org.junit.jupiter.api.BeforeEach",
+    "AfterEach":   "org.junit.jupiter.api.AfterEach",
+    "BeforeAll":   "org.junit.jupiter.api.BeforeAll",
+    "AfterAll":    "org.junit.jupiter.api.AfterAll",
+    "Disabled":    "org.junit.jupiter.api.Disabled",
+    "DisplayName": "org.junit.jupiter.api.DisplayName",
+    "Nested":      "org.junit.jupiter.api.Nested",
+    "Tag":         "org.junit.jupiter.api.Tag",
+    "Assertions":  "org.junit.jupiter.api.Assertions",
+}
+
+
+def _junit_imports_for(version: int = 4) -> Dict[str, str]:
+    return _JUNIT5_IMPORTS if int(version) >= 5 else _JUNIT4_IMPORTS
 
 
 def _extract_package_name(code: str) -> str:
@@ -310,10 +331,12 @@ def _resolve_symbol_from_project(symbol: str, rag_instance) -> Optional[str]:
     return None
 
 
-def _auto_add_missing_imports(code: str, classified: dict, rag_instance=None) -> Tuple[str, List[str]]:
+def _auto_add_missing_imports(code: str, classified: dict, rag_instance=None,
+                              junit_version: int = 4) -> Tuple[str, List[str]]:
     package_name = _extract_package_name(code)
     existing_imports = _extract_existing_imports(code)
     declared_types = _extract_declared_types(code)
+    junit_map = _junit_imports_for(junit_version)
 
     # 1) Primary source: compiler-classified missing symbols
     symbols = list(classified.get("cannot_find_symbol", []))
@@ -336,7 +359,8 @@ def _auto_add_missing_imports(code: str, classified: dict, rag_instance=None) ->
 
         fqn = _resolve_symbol_from_project(sym, rag_instance)
         if not fqn:
-            fqn = _COMMON_STD_IMPORTS.get(sym)
+            # 优先查项目 JUnit 版本对应的映射，再回落到通用标准库映射
+            fqn = junit_map.get(sym) or _COMMON_STD_IMPORTS.get(sym)
 
         if not fqn:
             continue
@@ -402,7 +426,8 @@ def _auto_add_missing_imports(code: str, classified: dict, rag_instance=None) ->
 
 # ============ Layer 1: Rule-based fixes ============
 
-def rule_fix(code: str, classified: dict, rag_instance=None) -> Tuple[str, List[str]]:
+def rule_fix(code: str, classified: dict, rag_instance=None,
+             junit_version: int = 4) -> Tuple[str, List[str]]:
     """Apply rule-based fixes. Returns (fixed_code, list_of_fixes_applied)."""
     fixes = []
 
@@ -519,11 +544,16 @@ def rule_fix(code: str, classified: dict, rag_instance=None) -> Tuple[str, List[
             '',
             code, flags=re.MULTILINE
         )
-        # Ensure JUnit Assert import
-        if 'import static org.junit.Assert.*;' not in code:
+        # Ensure JUnit Assert import (matches target project's JUnit version)
+        _junit_assert_star = (
+            'import static org.junit.jupiter.api.Assertions.*;'
+            if int(junit_version) >= 5
+            else 'import static org.junit.Assert.*;'
+        )
+        if _junit_assert_star not in code:
             code = re.sub(
                 r'(^package\s+[\w.]+;)',
-                r'\1\nimport static org.junit.Assert.*;',
+                r'\1\n' + _junit_assert_star,
                 code, count=1, flags=re.MULTILINE
             )
         fixes.append("Converted assertThat() fluent assertions to JUnit Assert equivalents")
@@ -617,6 +647,7 @@ def rule_fix(code: str, classified: dict, rag_instance=None) -> Tuple[str, List[
         code,
         classified,
         rag_instance=rag_instance,
+        junit_version=junit_version,
     )
     if added_imports:
         fixes.append(f"Auto-added missing imports: {added_imports}")
@@ -732,11 +763,14 @@ _FIX_PROMPT = """You are a Java test code fixer. The following test code failed 
 ## Additional Context
 {context}
 
+## JUnit Profile (follow STRICTLY)
+{junit_profile}
+
 ## Instructions
 Fix ALL compile errors in the code above. Rules:
 1. Fix every error listed above — do not leave any error unaddressed.
 2. If a method/class does not exist, either remove the test that uses it or replace with the correct API from the API information above.
-3. Do NOT use org.assertj. Use org.junit.Assert (assertEquals, assertTrue, assertThrows, etc.).
+3. Use ONLY the JUnit API family described in "JUnit Profile" above. Do NOT use org.assertj.
 4. Do NOT use private helper methods from other test classes.
 5. Do NOT access package-private or internal classes. Only use public API.
 6. Ensure all test methods declare 'throws Exception' if they call methods that throw checked exceptions.
@@ -749,18 +783,21 @@ Fix ALL compile errors in the code above. Rules:
 
 
 async def llm_fix(code: str, errors: List[dict], context: str = "",
-                  api_info: str = "") -> str:
+                  api_info: str = "", junit_version: int = 4) -> str:
     """Use LLM to fix compile errors that rules can't handle."""
     error_text = "\n".join(
         f"Line {e['line']}: {e['message']}" + (f" (symbol: {e['symbol']})" if e['symbol'] else "")
         for e in errors[:10]  # Limit to 10 errors
     )
 
+    # Inline import to avoid circular import at module load time
+    from llm.llm import _junit_profile_text
     prompt = _FIX_PROMPT.format(
         errors=error_text,
         code=code,
         api_info=api_info or "No API information available.",
         context=context[:_LLM_CONTEXT_LIMIT] if context else "No additional context.",
+        junit_profile=_junit_profile_text(junit_version),
     )
 
     resp = await chat(prompt, temperature=0.3, max_tokens=4000)
@@ -956,6 +993,7 @@ async def fix_compile_errors(
     agentic_rag=None,
     target_class: str = "",
     method_signature: str = "",
+    junit_version: int = 4,
 ) -> Tuple[str, bool, List[str]]:
     """Iterative compile-error fix loop.
 
@@ -1020,7 +1058,8 @@ async def fix_compile_errors(
 
         # Layer 1: Rule-based fixes (always apply)
         rag_instance = code_rag or agentic_rag
-        current_code, rule_fixes = rule_fix(current_code, classified, rag_instance=rag_instance)
+        current_code, rule_fixes = rule_fix(current_code, classified, rag_instance=rag_instance,
+                                            junit_version=junit_version)
         if rule_fixes:
             fix_log.append(f"  Rule fixes: {'; '.join(rule_fixes)}")
 
@@ -1109,9 +1148,10 @@ async def fix_compile_errors(
                 remaining_errors,
                 effective_context,
                 api_info=api_info,
+                junit_version=junit_version,
             )
             from llm.llm import _fix_imports
-            current_code = _fix_imports(current_code)
+            current_code = _fix_imports(current_code, junit_version=junit_version)
 
             # Compile after LLM fix
             if compile_fn:

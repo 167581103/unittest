@@ -1,0 +1,77 @@
+{
+  "meta": {
+    "timestamp": "20260428_104726",
+    "mode": "two_step",
+    "llm_concurrency": 4,
+    "total_methods": 1,
+    "total_duration_s": 357.4
+  },
+  "summary": {
+    "total": 1,
+    "gen_success": 1,
+    "gen_success_rate": 100.0,
+    "compile_success": 1,
+    "compile_success_rate": 100.0,
+    "compile_success_initial": 0,
+    "compile_success_after_prefix": 0,
+    "prefix_attempted": 1,
+    "prefix_rescued": 0,
+    "prefix_rescue_rate": 0.0,
+    "fix_attempted": 1,
+    "fix_rescued": 1,
+    "fix_rescue_rate": 100.0,
+    "avg_line_coverage_delta": 0.0,
+    "avg_branch_coverage_delta": 0.0,
+    "failure_tag_count": {}
+  },
+  "results": [
+    {
+      "id": "M01",
+      "class": "TypeUtils",
+      "full_class": "org.apache.commons.lang3.reflect.TypeUtils",
+      "method": "getTypeArguments",
+      "baseline_line_cov_from_pick": 23.5,
+      "method_total_lines": 17,
+      "full_class_name": "org.apache.commons.lang3.reflect.TypeUtils",
+      "method_name": "getTypeArguments",
+      "output_file": "/tmp/batch_generated/TypeUtils_getTypeArguments_M01_Test.java",
+      "test_class": "org.apache.commons.lang3.reflect.TypeUtils_getTypeArguments_M01_Test",
+      "mode": "two_step",
+      "gen_success": true,
+      "gen_error": null,
+      "test_cases_count": 9,
+      "methods_generated": 8,
+      "gen_duration_s": 178.4,
+      "compile_success": true,
+      "compile_success_stage": "after_fix",
+      "deterministic_prefixed": true,
+      "deterministic_prefix_success": true,
+      "deterministic_prefix_changes": 2,
+      "deterministic_prefix_log": [
+        "Pre-compile: auto-added imports: import java.util.HashMap;, import java.util.List;",
+        "Round 1: Auto-added missing imports: ['import org.junit.jupiter.api.Assertions;']",
+        "Round 2: compile passed after deterministic fixes"
+      ],
+      "fix_attempted": true,
+      "fix_success": true,
+      "fix_log": [
+        "Attempt 1: 4 errors (rule-fixable=0, hard=4)",
+        "  RAG decision: False — all remaining errors are syntactic",
+        "  Skipped AgenticRAG (errors are non-semantic)",
+        "  LLM fix applied (4 errors)",
+        "Attempt 1: ✓ Compile succeeded!"
+      ],
+      "baseline_line_cov": 85.31,
+      "baseline_branch_cov": 74.35,
+      "new_line_cov": 85.31,
+      "new_branch_cov": 74.35,
+      "line_cov_delta": 0.0,
+      "branch_cov_delta": 0.0,
+      "target_method_line_cov": 71.43,
+      "target_method_branch_cov": 56.52,
+      "failure_tags": [],
+      "eval_error": null,
+      "eval_duration_s": 179.0
+    }
+  ]
+}

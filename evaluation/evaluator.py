@@ -99,19 +99,91 @@ class EvaluationReport:
 
 class TestEvaluator:
     """测试评估器"""
-    
-    def __init__(self, project_dir: str, jacoco_home: Optional[str] = None):
+
+    def __init__(
+        self,
+        project_dir: str,
+        jacoco_home: Optional[str] = None,
+        module_name: Optional[str] = "gson",
+        java_home: Optional[str] = None,
+        exec_file: Optional[str] = None,
+        surefire_arglines: bool = False,
+        mvn_extra_args: Optional[list] = None,
+    ):
         """
         初始化评估器
-        
+
         Args:
             project_dir: Maven项目根目录
             jacoco_home: JaCoCo工具路径
+            module_name: Maven 子模块名（多模块项目需要 -pl <module>）；单模块项目传 None。
+                         为兼容历史默认仍为 "gson"。
+            java_home:   用于构建/运行的 JDK 路径。默认 Java 17。
+            exec_file:   JaCoCo exec 输出路径。默认按 module_name 派生，如 /tmp/<module>-jacoco.exec
+            surefire_arglines:
+                pom.xml 是否引用了 <argLine>${argLine}</argLine>。
+                - True （如 commons-lang）：只用 mvn -DargLine=... 注入 JaCoCo，不设 JAVA_TOOL_OPTIONS
+                - False（如 gson）：用 JAVA_TOOL_OPTIONS 注入
         """
         self.project_dir = project_dir
         self.jacoco_home = jacoco_home or "/home/juu/unittest/lib/jacoco-0.8.14"
-        self.exec_file = "/tmp/gson-jacoco.exec"
+        self.module_name = module_name  # None 表示单模块项目
+        self.java_home = java_home or "/usr/lib/jvm/java-17-openjdk"
+        self.surefire_arglines = surefire_arglines
+        # 额外 Maven 参数（例如 commons-lang 需要 -Drat.skip=true 来绕开 License 头检查）
+        self.mvn_extra_args = list(mvn_extra_args) if mvn_extra_args else []
+        # exec 文件名按项目派生，避免多项目交叉污染
+        if exec_file:
+            self.exec_file = exec_file
+        else:
+            _tag = module_name or os.path.basename(project_dir.rstrip("/")) or "project"
+            self.exec_file = f"/tmp/{_tag}-jacoco.exec"
         self._actual_test_class = None  # 实际使用的测试类名
+
+    # --- 内部辅助：统一处理 "是否多模块 / base_dir / -pl 参数" ---
+    def _module_base_dir(self, project_root: Optional[str] = None) -> str:
+        """返回模块根目录：多模块项目是 project_dir/module_name，否则就是 project_dir。"""
+        root = project_root or self.project_dir
+        if self.module_name:
+            candidate = os.path.join(root, self.module_name)
+            if os.path.exists(candidate):
+                return candidate
+        return root
+
+    def _mvn_module_args(self) -> list:
+        """构建命令需要追加的 -pl/-am 参数；单模块项目为空列表。"""
+        if self.module_name:
+            return ["-pl", self.module_name, "-am"]
+        return []
+
+    def _mvn_extra_args(self) -> list:
+        """额外的项目级 Maven 参数（来自 projects.yaml 的 mvn_extra_args）。
+
+        例如 commons-lang 需要 -Drat.skip=true 来绕开 apache-rat-plugin
+        的 License 头检查，否则 LLM 生成的测试文件会被判为“未授权”。
+        """
+        return list(self.mvn_extra_args)
+
+    def _jacoco_mvn_flags(self, jacoco_agent: str) -> list:
+        """若 pom.xml 有 <argLine>，用 -DargLine= 注入；否则不传。"""
+        if self.surefire_arglines:
+            return [f"-DargLine={jacoco_agent}"]
+        return []
+
+    def _jacoco_env(self, jacoco_agent: str) -> dict:
+        """若适合用 JAVA_TOOL_OPTIONS（没有 argLine 蛞拦），就注入；否则返回纯净 env。"""
+        if self.surefire_arglines:
+            return self._build_env()
+        return self._build_env({"JAVA_TOOL_OPTIONS": jacoco_agent})
+
+    def _build_env(self, extra: Optional[dict] = None) -> dict:
+        env = os.environ.copy()
+        env["JAVA_HOME"] = self.java_home
+        env["M2_HOME"] = "/opt/maven-new"
+        env["PATH"] = f"{self.java_home}/bin:/opt/maven-new/bin:{env.get('PATH', '')}"
+        if extra:
+            env.update(extra)
+        return env
     
     def evaluate(
         self,
@@ -232,14 +304,8 @@ class TestEvaluator:
             
             unique_class_name = f"{original_class_name}Generated{timestamp}"
             
-            # 构建目标路径 - 检测是否是多模块项目
-            gson_module_path = os.path.join(self.project_dir, "gson")
-            if os.path.exists(gson_module_path):
-                # 多模块项目，使用gson子模块的路径
-                base_dir = gson_module_path
-            else:
-                # 单模块项目
-                base_dir = self.project_dir
+            # 构建目标路径 - 按 module_name 自动判断单/多模块
+            base_dir = self._module_base_dir()
             
             if package:
                 package_path = package.replace(".", "/")
@@ -272,7 +338,23 @@ class TestEvaluator:
             # 确保package声明正确（只在有包名时添加）
             if package and f"package {package};" not in content:
                 content = f"package {package};\n\n{content}"
-            
+
+            # 注入 @SuppressWarnings，绕过目标工程（如 gson）的 <failOnWarning>true</failOnWarning>：
+            # 生成的测试常会调用被测的 @Deprecated 方法、用到裸类型等，导致 javac 发出警告
+            # 被 -Werror 升级为错误。注意 "all" 对 deprecation 无效，需显式列出。
+            import re as _re
+            suppress_ann = '@SuppressWarnings({"deprecation", "unchecked", "rawtypes", "removal", "cast", "serial"})'
+            class_decl_re = _re.compile(r'(^|\n)(\s*)(public\s+(?:abstract\s+|final\s+)?class\s+' + _re.escape(unique_class_name) + r'\b)')
+            m = class_decl_re.search(content)
+            if m:
+                prefix_text = content[:m.start()]
+                # 已有 SuppressWarnings 就别重复加
+                tail_before = prefix_text[-200:] if len(prefix_text) > 200 else prefix_text
+                if '@SuppressWarnings' not in tail_before:
+                    indent = m.group(2)
+                    replacement = f"{m.group(1)}{indent}{suppress_ann}\n{indent}{m.group(3)}"
+                    content = content[:m.start()] + replacement + content[m.end():]
+
             with open(target_file, 'w', encoding='utf-8') as dst:
                 dst.write(content)
             
@@ -290,17 +372,14 @@ class TestEvaluator:
         """清理旧的生成测试文件，避免编译冲突"""
         try:
             import glob
-            # 检测是否是多模块项目
-            gson_module_path = os.path.join(self.project_dir, "gson")
-            if os.path.exists(gson_module_path):
-                # 多模块项目
-                test_dirs = [
-                    os.path.join(gson_module_path, "src/test/java"),
-                    os.path.join(self.project_dir, "src/test/java")
-                ]
-            else:
-                # 单模块项目
-                test_dirs = [os.path.join(self.project_dir, "src/test/java")]
+            # 根据 module_name 推导要清理的测试目录
+            module_base = self._module_base_dir()
+            test_dirs = [os.path.join(module_base, "src/test/java")]
+            # 若多模块项目，同时兜底清理根目录 src/test/java（历史遗留）
+            if self.module_name and module_base != self.project_dir:
+                root_test = os.path.join(self.project_dir, "src/test/java")
+                if root_test not in test_dirs:
+                    test_dirs.append(root_test)
 
             # 兼容两类历史产物：
             # 1) *Generated*.java（当前策略）
@@ -336,32 +415,16 @@ class TestEvaluator:
         """编译测试文件，返回 (success, raw_output)"""
         # 确保在项目根目录执行命令，避免增量编译问题
         project_root = self.project_dir if os.path.exists(os.path.join(self.project_dir, "pom.xml")) else os.path.dirname(self.project_dir)
-        
-        # 检查是否是多模块项目
-        gson_module_path = os.path.join(project_root, "gson")
-        if os.path.exists(gson_module_path):
-            # 多模块项目，跳过有问题的test-jpms模块，只编译gson模块
-            cmd = [
-                "mvn", "compile", "test-compile",
-                "-pl", "gson",
-                "-am",
-                "-DskipTests",
-                "-Dmaven.compiler.failOnWarning=false"
-            ]
-        else:
-            # 单模块项目
-            cmd = [
-                "mvn", "compile", "test-compile",
-                "-DskipTests",
-                "-Dmaven.compiler.failOnWarning=false"
-            ]
+
+        # 构造编译命令：根据 module_name 决定是否带 -pl/-am
+        cmd = ["mvn", "compile", "test-compile"]
+        cmd += self._mvn_module_args()
+        cmd += ["-DskipTests", "-Dmaven.compiler.failOnWarning=false"]
+        cmd += self._mvn_extra_args()
         
         try:
-            # Set Java 17 and Maven environment (same as get_baseline_coverage)
-            env = os.environ.copy()
-            env["JAVA_HOME"] = "/usr/lib/jvm/java-17-openjdk"
-            env["PATH"] = f"/usr/lib/jvm/java-17-openjdk/bin:/opt/maven-new/bin:{env.get('PATH', '')}"
-            env["M2_HOME"] = "/opt/maven-new"
+            # Set JDK & Maven environment（JDK 由项目配置决定）
+            env = self._build_env()
             result = subprocess.run(
                 cmd,
                 cwd=project_root,
@@ -398,7 +461,20 @@ class TestEvaluator:
                         if len(error_lines) > 5:
                             print(f"    ... 还有 {len(error_lines) - 5} 个错误")
                     else:
-                        print(f"  ✗ 编译失败（无详细错误信息）")
+                        # 兜底：抓任何 [ERROR] 开头的行（含 Maven plugin goal 失败等）
+                        # 这样 RAT License 检查、enforcer 版本检查等非 javac 错误也能浮现出来
+                        fallback_lines = [
+                            ln.strip() for ln in combined_output.split('\n')
+                            if ln.strip().startswith('[ERROR]') and ln.strip() != '[ERROR]'
+                        ]
+                        if fallback_lines:
+                            print(f"  ✗ 构建失败（非编译错误，可能是 Maven 插件）:")
+                            for ln in fallback_lines[:5]:
+                                print(f"    {ln}")
+                            if len(fallback_lines) > 5:
+                                print(f"    ... 还有 {len(fallback_lines) - 5} 行")
+                        else:
+                            print(f"  ✗ 编译失败（无详细错误信息）")
                 else:
                     print(f"  ✗ 编译失败")
             else:
@@ -420,37 +496,28 @@ class TestEvaluator:
         project_root = self.project_dir if os.path.exists(os.path.join(self.project_dir, "pom.xml")) else os.path.dirname(self.project_dir)
 
         results = []
-        gson_module_path = os.path.join(project_root, "gson")
-        
+
         # 在运行测试前删除旧的 exec 文件
         if os.path.exists(self.exec_file):
             os.remove(self.exec_file)
-        
+
         # 一次性运行所有测试类，累积覆盖率
         test_class_names = [tc.split(".")[-1] for tc in test_classes]
         test_pattern = ",".join(test_class_names)
-        
-        # 使用 JAVA_TOOL_OPTIONS 传递 JaCoCo agent（不指定 append，让 JaCoCo 默认覆盖）
+
+        # 注入 JaCoCo：根据 surefire_arglines 自动选择 JAVA_TOOL_OPTIONS 或 -DargLine
         jacoco_agent = f"-javaagent:{self.jacoco_home}/lib/jacocoagent.jar=destfile={self.exec_file}"
-        env = os.environ.copy()
-        env["JAVA_TOOL_OPTIONS"] = jacoco_agent
-        env["JAVA_HOME"] = "/usr/lib/jvm/java-17-openjdk"
-        env["PATH"] = f"/usr/lib/jvm/java-17-openjdk/bin:/opt/maven-new/bin:{env.get('PATH', '')}"
-        env["M2_HOME"] = "/opt/maven-new"
-        
-        if os.path.exists(gson_module_path):
-            cmd = [
-                "mvn", "test",
-                "-pl", "gson",
-                "-am",
-                f"-Dtest={test_pattern}",
-                "-Dmaven.compiler.failOnWarning=false",
-                "-Dmaven.test.failure.ignore=true",  # Don't abort on test assertion failures
-            ]
-        else:
-            cmd = ["mvn", "test", f"-Dtest={test_pattern}",
-                   "-Dmaven.compiler.failOnWarning=false",
-                   "-Dmaven.test.failure.ignore=true"]
+        env = self._jacoco_env(jacoco_agent)
+
+        cmd = ["mvn", "test"]
+        cmd += self._mvn_module_args()
+        cmd += self._jacoco_mvn_flags(jacoco_agent)
+        cmd += [
+            f"-Dtest={test_pattern}",
+            "-Dmaven.compiler.failOnWarning=false",
+            "-Dmaven.test.failure.ignore=true",  # Don't abort on test assertion failures
+        ]
+        cmd += self._mvn_extra_args()
         
         try:
             result = subprocess.run(cmd, cwd=project_root, text=True, timeout=120, env=env,
@@ -477,13 +544,15 @@ class TestEvaluator:
         """Measure code coverage from exec file generated by _run_test."""
         return self._get_coverage_from_exec(self.exec_file, target_class)
     
-    def get_baseline_coverage(self, target_class: str, baseline_test: str = "JsonReaderTest") -> Optional[CoverageReport]:
+    def get_baseline_coverage(self, target_class: str, baseline_test: Optional[str] = None) -> Optional[CoverageReport]:
         """获取基准覆盖率（不包含新生成的测试）
-        
+
         Args:
             target_class: 目标类全名
-            baseline_test: 用于获取基准覆盖率的测试类名
+            baseline_test: 用于获取基准覆盖率的测试类名；为 None 时按 <ClassName>Test 规则推导
         """
+        if baseline_test is None:
+            baseline_test = target_class.split(".")[-1] + "Test"
         print(f"[→] 获取基准覆盖率（测试类: {baseline_test}）")
 
         # ★ 关键：先清理上一次 pipeline 残留的 *Generated* 测试文件，
@@ -497,28 +566,20 @@ class TestEvaluator:
         if os.path.exists(baseline_exec):
             os.remove(baseline_exec)
         
-        # 使用 JAVA_TOOL_OPTIONS 传递 JaCoCo agent（不指定 append）
+        # 注入 JaCoCo：根据 surefire_arglines 自动选择 JAVA_TOOL_OPTIONS 或 -DargLine
         jacoco_agent = f"-javaagent:{self.jacoco_home}/lib/jacocoagent.jar=destfile={baseline_exec}"
-        env = os.environ.copy()
-        env["JAVA_TOOL_OPTIONS"] = jacoco_agent
-        # 设置 Java 17 环境变量（gson 项目需要 Java 17）
-        env["JAVA_HOME"] = "/usr/lib/jvm/java-17-openjdk"
-        env["M2_HOME"] = "/opt/maven-new"
-        env["PATH"] = f"/usr/lib/jvm/java-17-openjdk/bin:/opt/maven-new/bin:{env.get('PATH', '')}"
-        
+        env = self._jacoco_env(jacoco_agent)
+
         # 运行基准测试
-        gson_module_path = os.path.join(project_root, "gson")
-        if os.path.exists(gson_module_path):
-            cmd = [
-                "mvn", "test",
-                "-pl", "gson",
-                "-am",
-                f"-Dtest={baseline_test}",
-                "-DfailIfNoTests=false",
-                "-Dmaven.compiler.failOnWarning=false"
-            ]
-        else:
-            cmd = ["mvn", "test", f"-Dtest={baseline_test}", "-DfailIfNoTests=false", "-Dmaven.compiler.failOnWarning=false"]
+        cmd = ["mvn", "test"]
+        cmd += self._mvn_module_args()
+        cmd += self._jacoco_mvn_flags(jacoco_agent)
+        cmd += [
+            f"-Dtest={baseline_test}",
+            "-DfailIfNoTests=false",
+            "-Dmaven.compiler.failOnWarning=false",
+        ]
+        cmd += self._mvn_extra_args()
         
         try:
             # 不使用 capture_output，让 Maven 输出显示出来以便诊断问题
@@ -559,12 +620,7 @@ class TestEvaluator:
         """从JaCoCo exec文件获取覆盖率（包含方法级别）"""
         try:
             project_root = self.project_dir if os.path.exists(os.path.join(self.project_dir, "pom.xml")) else os.path.dirname(self.project_dir)
-            gson_module_path = os.path.join(project_root, "gson")
-            
-            if os.path.exists(gson_module_path):
-                classfiles_path = os.path.join(gson_module_path, "target/classes")
-            else:
-                classfiles_path = os.path.join(self.project_dir, "target/classes")
+            classfiles_path = os.path.join(self._module_base_dir(project_root), "target/classes")
             
             # 生成XML报告（支持方法级别覆盖率）
             xml_file = "/tmp/coverage.xml"

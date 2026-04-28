@@ -1,0 +1,30 @@
+{
+  "id": "exp_04",
+  "class_name": "TypeToken",
+  "full_class_name": "com.google.gson.reflect.TypeToken",
+  "method_name": "getParameterized",
+  "timestamp": "2026-03-17T20:31:17.214430",
+  "compilation_success": false,
+  "baseline_coverage": {
+    "line_coverage": 83.62573099415205,
+    "branch_coverage": 70.0,
+    "method_coverage": 86.36363636363636,
+    "covered_lines": 143,
+    "total_lines": 171,
+    "target_method_coverage": {
+      "method_name": "getParameterized",
+      "line_coverage": 100.0,
+      "branch_coverage": 100.0,
+      "covered_lines": 38,
+      "total_lines": 38,
+      "covered_branches": 14,
+      "total_branches": 14
+    }
+  },
+  "new_coverage": null,
+  "coverage_improvement": null,
+  "success": false,
+  "errors": [
+    "编译失败"
+  ]
+}

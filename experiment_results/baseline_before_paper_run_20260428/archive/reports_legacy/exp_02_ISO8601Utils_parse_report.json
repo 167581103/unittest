@@ -1,0 +1,49 @@
+{
+  "id": "exp_02",
+  "class_name": "ISO8601Utils",
+  "full_class_name": "com.google.gson.internal.bind.util.ISO8601Utils",
+  "method_name": "parse",
+  "timestamp": "2026-03-17T20:30:39.582485",
+  "compilation_success": true,
+  "baseline_coverage": {
+    "line_coverage": 77.77777777777779,
+    "branch_coverage": 54.94505494505495,
+    "method_coverage": 88.88888888888889,
+    "covered_lines": 119,
+    "total_lines": 153,
+    "target_method_coverage": {
+      "method_name": "parse",
+      "line_coverage": 71.73913043478261,
+      "branch_coverage": 49.09090909090909,
+      "covered_lines": 66,
+      "total_lines": 92,
+      "covered_branches": 27,
+      "total_branches": 55
+    }
+  },
+  "new_coverage": {
+    "line_coverage": 94.77124183006535,
+    "branch_coverage": 74.72527472527473,
+    "method_coverage": 100.0,
+    "covered_lines": 145,
+    "total_lines": 153,
+    "target_method_coverage": {
+      "method_name": "parse",
+      "line_coverage": 93.47826086956522,
+      "branch_coverage": 70.9090909090909,
+      "covered_lines": 86,
+      "total_lines": 92,
+      "covered_branches": 39,
+      "total_branches": 55
+    }
+  },
+  "coverage_improvement": {
+    "line_coverage_delta": 16.993464052287564,
+    "branch_coverage_delta": 19.78021978021978,
+    "covered_lines_delta": 26,
+    "target_method_line_delta": 21.73913043478261,
+    "target_method_branch_delta": 21.818181818181813
+  },
+  "success": true,
+  "errors": []
+}

@@ -1,0 +1,50 @@
+# 多项目配置清单
+# -------------------------------------------------
+# 本文件定义框架支持的所有被测 Maven 项目。
+# 通过 `active` 字段切换当前实验目标项目；也可以通过
+#   python main.py pick --project commons-lang
+# 在命令行临时覆盦。
+#
+# 字段说明：
+#   project_dir      : 项目根目录（包含 pom.xml）
+#   module_name      : Maven 子模块名。若为多模块项目（如 gson），
+#                      此值即 `mvn -pl <module_name>` 用的那个；
+#                      单模块项目设为 null。
+#   java_home        : 构建/运行时使用的 JDK 路径
+#   baseline_exec    : pick_methods 阶段 baseline JaCoCo exec 文件路径
+#   rag_index        : AgenticRAG 索引缓存路径
+#   surefire_arglines: 项目 pom.xml 是否已在 <argLine> 中引用了 ${argLine}。
+#                      - true （如 commons-lang）：只能用 mvn -DargLine=... 注入 JaCoCo，
+#                        用 JAVA_TOOL_OPTIONS 会被 surefire 覆盖，甚至导致注入两次后 JVM 崩溃。
+#                      - false（如 gson）：用 JAVA_TOOL_OPTIONS 即可。
+#   junit_version    : 目标项目使用的 JUnit 主版本：4 或 5（JUnit 5 = Jupiter）。
+#                      生成器 / 修复器会据此选择正确的 import 路径、注解、断言 API。
+#                      - 4（如 gson）：org.junit.Test / org.junit.Assert.*
+#                      - 5（如 commons-lang）：org.junit.jupiter.api.Test / org.junit.jupiter.api.Assertions.*
+# -------------------------------------------------
+
+active: gson
+
+projects:
+  gson:
+    project_dir: /data/workspace/unittest/data/project/gson
+    module_name: gson
+    java_home: /usr/lib/jvm/java-17-openjdk
+    baseline_exec: /tmp/gson-jacoco.exec
+    rag_index: /tmp/gson_code_rag.index
+    surefire_arglines: false
+    junit_version: 4
+
+  commons-lang:
+    project_dir: /data/workspace/unittest/data/project/commons-lang
+    module_name: null        # 单模块项目
+    java_home: /usr/lib/jvm/java-17-openjdk
+    baseline_exec: /tmp/commons-lang-jacoco.exec
+    rag_index: /tmp/commons-lang_code_rag.index
+    surefire_arglines: true
+    junit_version: 5
+    # commons-lang 的 pom 引入了 apache-rat-plugin，会在构建时检查所有源文件是否
+    # 带 Apache License 头。LLM 生成的测试文件没有该头，会导致 RAT 检查失败而非
+    # javac 编译失败，进而让 FixLoop 无从修起。实验中我们跳过该检查。
+    mvn_extra_args:
+      - -Drat.skip=true
