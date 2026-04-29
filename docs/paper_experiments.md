@@ -89,12 +89,10 @@
 
 | 场次 | 设置 | 对比点 |
 |---|---|---|
-| **E4a-gson-no-prefix** | 关 prefix（需新增 flag） | 只依赖 LLM 生成 + FixLoop |
+| **E4a-gson-no-prefix** | `--no-prefix` | 只依赖 LLM 生成 + FixLoop |
 | **E4b-gson-with-prefix** | 开 prefix（= E1-gson） | 当前默认 |
 
-**目的**：量化确定性规则修复层的独立贡献。
-
-> ⚠️ `--no-prefix` flag 目前没有，需要在 E4 开跑前加一个。
+**目的**：量化确定性规则修复层的独立贡献。`--no-prefix` flag 已在 2026-04-28 加入。
 
 ### E5（可选）— 消融：是否启用 Agentic RAG
 
@@ -106,12 +104,23 @@
 
 1. ✅ **备份历史数据**（已完成）
 2. ✅ **规划文档**（本文件）
-3. ⏳ **等待正在跑的 commons-lang top-12**（`PID=1574737`，预计 45 分钟左右完成）
-4. 🔨 **加 token 埋点到 `llm/llm.py` + `core/fix_loop.py` + `experiments/run_batch.py`**
-5. 🔨 **加 `--no-prefix` / `--no-rag` 等消融 flag**
-6. 🏁 **按 E1 → E2 → E3 → E4 顺序跑完所有场次**
-7. 📊 每跑完一场立刻做快速摘要（不必全量统计），全部跑完后再统一做 P0 数据分析器
+3. ✅ **commons-lang JUnit 5 适配验证**（`20260428_112333_junit5_top12`）——无 token 埋点，作 E0 基线
+4. ✅ **token 埋点**已加到 `llm/llm.py` + `core/fix_loop.py` + `rag/agentic_rag.py` + `experiments/run_batch.py`
+5. ✅ **`--no-prefix` flag**已加到 `experiments/run_batch.py` + `main.py`
+6. ✅ **核心层架构文档 + 接入 demo**：见 `docs/architecture.md` 与 `examples/external_integration.py`
+7. ⏳ **按 E1 → E2 → E3 → E4 顺序跑完所有场次**（等待）
+8. 📊 每跑完一场立刻用 `experiments/rerender_report.py` 输出方法级版报告；全部跑完再做整体数据分析器。
 
+### 推荐执行顺序（串行跑）
+
+| 顺序 | 场次 | 用时估 | 备注 |
+|---|---|---|---|
+| 1 | E1-gson | ~35 min | 最基础、最重要 |
+| 2 | E1-commons-lang | ~40 min | 跨项目验证 |
+| 3 | E2a-gson-oneshot | ~25 min | 一步式消融 |
+| 4 | E3a-gson-no-fix | ~30 min | 禁 FixLoop 消融 |
+| 5 | E4a-gson-no-prefix | ~35 min | 禁 Prefix 消融 |
+| 6（可选） | E2a-commons-lang-oneshot | ~30 min | 一步式跨项目验证 |
 ---
 
 ## 4. 命名与存档规范

@@ -227,6 +227,101 @@ _METHOD_SIG_KEYWORDS = re.compile(
 )
 
 
+def _mask_comments_and_strings(source: str) -> str:
+    """把 Java 源码里的注释 / 字符串 / 字符字面量**就地替换为等长空白**。
+
+    目的是在做"括号/分号回溯定位"时，防止 javadoc 里的 `{@link Foo#bar(X)}` 这类
+    结构干扰——它们会被完全清除，但整个文件的字符 offset 保持不变，
+    这样后续用 source[sig_start:body_end] 切片取到的内容与原始源码 offset 一致。
+
+    被剥离的范围：
+      - `/* ... */` 块注释（含 javadoc）
+      - `// ...` 行注释
+      - 双引号字符串字面量（含 `\\"` 转义）
+      - 单引号字符字面量（含 `\\'`）
+      - 文本块 \"\"\" ... \"\"\"（Java 15+）
+
+    空白填充策略：换行保留、其余字符替换为空格。
+    """
+    out = []
+    i = 0
+    n = len(source)
+    while i < n:
+        c = source[i]
+        c2 = source[i:i + 2]
+        c3 = source[i:i + 3]
+        # 文本块 """ ... """
+        if c3 == '"""':
+            out.append('   ')
+            j = i + 3
+            while j < n - 2 and source[j:j + 3] != '"""':
+                out.append('\n' if source[j] == '\n' else ' ')
+                j += 1
+            if j < n - 2:
+                out.append('   ')
+                j += 3
+            i = j
+            continue
+        # 块注释
+        if c2 == '/*':
+            out.append('  ')
+            j = i + 2
+            while j < n - 1 and source[j:j + 2] != '*/':
+                out.append('\n' if source[j] == '\n' else ' ')
+                j += 1
+            if j < n - 1:
+                out.append('  ')
+                j += 2
+            i = j
+            continue
+        # 行注释
+        if c2 == '//':
+            while i < n and source[i] != '\n':
+                out.append(' ')
+                i += 1
+            continue
+        # 字符串字面量
+        if c == '"':
+            out.append(' ')
+            j = i + 1
+            while j < n and source[j] != '"':
+                if source[j] == '\\' and j + 1 < n:
+                    out.append('  ')
+                    j += 2
+                    continue
+                out.append('\n' if source[j] == '\n' else ' ')
+                j += 1
+            if j < n:
+                out.append(' ')
+                j += 1
+            i = j
+            continue
+        # 字符字面量
+        if c == "'":
+            out.append(' ')
+            j = i + 1
+            while j < n and source[j] != "'":
+                if source[j] == '\\' and j + 1 < n:
+                    out.append('  ')
+                    j += 2
+                    continue
+                out.append(' ')
+                j += 1
+            if j < n:
+                out.append(' ')
+                j += 1
+            i = j
+            continue
+        out.append(c)
+        i += 1
+    masked = ''.join(out)
+    # 安全保险：长度必须与原文一致，offset 才不会错位
+    if len(masked) != n:
+        # 出现罕见边界问题时退化为"整串保留"，避免把 offset 搞坏
+        return source
+    return masked
+
+
 def _strip_comments_and_annotations(text: str) -> str:
     """去掉注释和注解，便于做可见性/static/构造器分析。"""
     text = re.sub(r'/\*.*?\*/', ' ', text, flags=re.DOTALL)
@@ -275,7 +370,8 @@ def _class_only_has_private_constructors(source: str, simple_class: str) -> bool
 
 
 def _extract_method_snippet(source: str, method_name: str,
-                            desc: str = "") -> Optional[Dict]:
+                            desc: str = "",
+                            start_line_hint: Optional[int] = None) -> Optional[Dict]:
     """从源文件里抽一个方法（尽量鲁棒）。
 
     策略：先找所有 `<method_name>(` 出现位置，向上回溯找该方法的签名起点
@@ -284,37 +380,48 @@ def _extract_method_snippet(source: str, method_name: str,
 
     若传入 desc（JVM descriptor），会按参数类型匹配指定的重载。
 
+    ★ 关键防护 1（javadoc）：先把"注释 + 字符串"就地替换为等长空白得到 `masked`，
+      用 masked 做所有定位（查方法名、回溯成员边界、找 `{` 等），
+      这样 Javadoc 里的 `{@link ClassName#method(...)}` 绝不会被当成真方法。
+      最终切片仍从原始 `source` 里取，保留注释内容供 LLM 阅读。
+
+    ★ 关键防护 2（重载）：若传入 `start_line_hint`（来自 JaCoCo XML 的 `line` 属性，
+      指向方法体某行——通常是第一条可执行语句所在行），则优先选择其**起始行号最接近**
+      hint 且 `start_line ≤ hint` 的那个重载。这比 desc 参数类型启发式更可靠。
+
     返回 {"signature": "...", "code": "...", "start_line": N} 或 None
     """
     if not source:
         return None
 
-    # 找 method_name(  的所有位置（不在字符串里）
+    masked = _mask_comments_and_strings(source)
+
+    # 收集所有"看起来像方法定义"的候选
     pattern = re.compile(r'\b' + re.escape(method_name) + r'\s*\(')
-    for match in pattern.finditer(source):
+    candidates: List[Dict] = []
+
+    for match in pattern.finditer(masked):
         name_pos = match.start()
 
-        # 向上回溯找签名起点：从 name_pos 往前，记录最后遇到的
-        # `{` / `}` / `;` 的位置，下一个字符就是成员的起点
+        # 向上回溯找签名起点：在 masked 上扫，这样 `{@link ...}` 的 `{` 已被消掉
         boundary = -1
         for i in range(name_pos - 1, -1, -1):
-            ch = source[i]
+            ch = masked[i]
             if ch in '{};':
                 boundary = i
                 break
         sig_start = boundary + 1
 
-        # 跳过开头的空白 / 注释 / annotation
-        while sig_start < name_pos and source[sig_start] in ' \t\n\r':
+        # 跳过开头的空白
+        while sig_start < name_pos and masked[sig_start] in ' \t\n\r':
             sig_start += 1
 
-        # 方法体起点：从 name_pos 之后找第一个 `{`；若之前先遇到 `;`，说明这是
-        # 一个方法声明（接口/抽象方法），或者不是方法定义
+        # 方法体起点：从 name_pos 之后找第一个 `{`
         body_start = -1
         stop = False
         i = match.end()
-        while i < len(source):
-            ch = source[i]
+        while i < len(masked):
+            ch = masked[i]
             if ch == ';':
                 stop = True
                 break
@@ -329,8 +436,8 @@ def _extract_method_snippet(source: str, method_name: str,
         depth = 0
         j = body_start
         body_end = -1
-        while j < len(source):
-            cj = source[j]
+        while j < len(masked):
+            cj = masked[j]
             if cj == '{':
                 depth += 1
             elif cj == '}':
@@ -342,50 +449,86 @@ def _extract_method_snippet(source: str, method_name: str,
         if body_end == -1:
             continue
 
-        # 拿到整段代码
         code = source[sig_start:body_end]
         if len(code) > 6000 or len(code) < 20:
             continue
 
-        # 启发式：签名必须包含方法名，且前面不能是另一个 `new` 关键字（排除构造调用）
-        sig_line = source[sig_start:body_start].strip().replace('\n', ' ')
-        sig_line = re.sub(r'\s+', ' ', sig_line)
-        if not sig_line or method_name not in sig_line:
+        sig_line_masked = masked[sig_start:body_start].strip().replace('\n', ' ')
+        sig_line_masked = re.sub(r'\s+', ' ', sig_line_masked)
+        if not sig_line_masked or method_name not in sig_line_masked:
             continue
 
-        # 关键过滤：签名里必须含方法修饰符之一，否则不是真正的方法定义
-        # （防止 Javadoc 里 `{@link #toJson(Object)}` 被误识别为方法）
-        if not _METHOD_SIG_KEYWORDS.search(sig_line):
+        if not _METHOD_SIG_KEYWORDS.search(sig_line_masked):
             continue
 
-        # 排除 `@link` / `@see` 类型的 Javadoc 引用：签名前一小段里如果有 @link/@see/@code，丢弃
-        preceding = source[max(0, sig_start - 30):sig_start]
+        preceding = masked[max(0, sig_start - 30):sig_start]
         if re.search(r'@(?:link|linkplain|see|code|value)\b', preceding):
             continue
 
-        # 排除 `new Foo() { ... }` 匿名类构造：前面紧跟 `new `
         if 'new ' in preceding and not any(
-                kw in sig_line for kw in ('public', 'private', 'protected', 'static', 'void', 'return ')):
-            # 不像方法签名（没有修饰符/返回类型），继续下一个匹配
+                kw in sig_line_masked for kw in ('public', 'private', 'protected', 'static', 'void', 'return ')):
             continue
 
-        # 按 JVM descriptor 匹配重载：若给了 desc 但签名对不上，继续找下一个
-        if desc and not _signature_matches_desc(sig_line, desc):
-            continue
+        sig_line_raw = source[sig_start:body_start].strip().replace('\n', ' ')
+        sig_line_raw = re.sub(r'\s+', ' ', sig_line_raw)
 
         start_line = source[:sig_start].count('\n') + 1
-        return {"signature": sig_line, "code": code, "start_line": start_line}
+        body_start_line = source[:body_start].count('\n') + 1
 
-    return None
+        candidates.append({
+            "signature": sig_line_raw,
+            "code": code,
+            "start_line": start_line,
+            "body_start_line": body_start_line,
+            "sig_line_masked": sig_line_masked,
+        })
+
+    if not candidates:
+        return None
+
+    # ★ 优先级 1：hint 行号匹配（JaCoCo `line` 通常指向方法体第一可执行语句，
+    # 因此满足 start_line ≤ hint 且 hint 落在方法体范围内）
+    if start_line_hint is not None:
+        best = None
+        best_dist = None
+        for c in candidates:
+            # hint 应该位于 [body_start_line, body_start_line + <N>] 之间。
+            # 取 "hint - body_start_line" 最小但非负的候选为最佳。
+            dist = start_line_hint - c["body_start_line"]
+            if dist < 0:
+                continue
+            if best_dist is None or dist < best_dist:
+                best = c
+                best_dist = dist
+        if best is not None:
+            return {"signature": best["signature"], "code": best["code"],
+                    "start_line": best["start_line"]}
+
+    # 优先级 2：desc 参数匹配
+    if desc:
+        for c in candidates:
+            if _signature_matches_desc(c["sig_line_masked"], desc):
+                return {"signature": c["signature"], "code": c["code"],
+                        "start_line": c["start_line"]}
+
+    # 优先级 3：取第一个（兜底）
+    c = candidates[0]
+    return {"signature": c["signature"], "code": c["code"], "start_line": c["start_line"]}
 
 
 def _pick_from_xml(
     top_k: int = 15,
-    min_lines: int = 8,
-    max_coverage: float = 70.0,
+    min_lines: int = 10,
+    max_coverage: float = 95.0,
     max_per_class: int = 2,
+    strata: bool = True,
 ) -> List[Dict]:
-    """解析 XML 报告，按规则挑选候选方法。"""
+    """解析 XML 报告，按规则挑选候选方法。
+
+    Args:
+        strata: 是否按覆盖率分层采样（70% 置信）。论文场景下必开，
+                以同时证明方法论对低/中/高覆盖率方法都有提升。
+    """
     tree = ET.parse(XML_REPORT)
     root = tree.getroot()
 
@@ -405,11 +548,25 @@ def _pick_from_xml(
             # 预读源文件一次
             source = _read_source_for_class(full_cls)
 
+            # ★ 关键：统计每个方法名在 XML 里出现的次数；
+            #   同名重载（name_count > 1）目前不能被 evaluator 的
+            #   get_method_coverage(name) 精确区分，为避免"测的重载 A、
+            #   统计的重载 B"这种口径错位，直接剔除出候选池。
+            name_counts: Dict[str, int] = {}
+            for method in cls.findall("method"):
+                nm = method.get("name", "")
+                if nm in SKIP_METHODS:
+                    continue
+                name_counts[nm] = name_counts.get(nm, 0) + 1
+
             # 收集该类的候选方法
             class_candidates: List[Dict] = []
             for method in cls.findall("method"):
                 mname = method.get("name", "")
                 if mname in SKIP_METHODS:
+                    continue
+                # 跳过同名重载（方法名在该类内不唯一）
+                if name_counts.get(mname, 0) > 1:
                     continue
                 counters = {c.get("type"): c for c in method.findall("counter")}
                 line_c = counters.get("LINE", {})
@@ -430,10 +587,19 @@ def _pick_from_xml(
                 if source is None:
                     continue
                 mdesc = method.get("desc", "")
-                snippet = _extract_method_snippet(source, mname, desc=mdesc)
+                # JaCoCo XML 的 line 指向方法体某行（通常是第一条可执行语句所在行），
+                # 用它精确区分重载。
+                mline = method.get("line")
+                try:
+                    mline_int = int(mline) if mline is not None else None
+                except (TypeError, ValueError):
+                    mline_int = None
+                snippet = _extract_method_snippet(
+                    source, mname, desc=mdesc, start_line_hint=mline_int)
                 if snippet is None and mdesc:
                     # descriptor 精确匹配偶尔会因源码签名表达差异失配，做一次降级兜底
-                    snippet = _extract_method_snippet(source, mname, desc="")
+                    snippet = _extract_method_snippet(
+                        source, mname, desc="", start_line_hint=mline_int)
                 if snippet is None:
                     continue
 
@@ -474,9 +640,38 @@ def _pick_from_xml(
             class_candidates.sort(key=lambda x: -x["value"])
             candidates.extend(class_candidates[:max_per_class])
 
-    # 全局按 value 降序排
+    # 全局排序
     candidates.sort(key=lambda x: -x["value"])
-    return candidates[:top_k]
+
+    if not strata:
+        return candidates[:top_k]
+
+    # ★ 分层采样：低覆盖率 [0, 30) / 中 [30, 70) / 高 [70, max_coverage)
+    #   每档容量大致均分 top_k，不够时用其他档的 high-value 补齐
+    low  = [c for c in candidates if c["line_coverage"] < 30]
+    mid  = [c for c in candidates if 30 <= c["line_coverage"] < 70]
+    high = [c for c in candidates if 70 <= c["line_coverage"] < max_coverage]
+
+    per = max(1, top_k // 3)
+    selected: List[Dict] = []
+    # 各档取 per 个（本档已经对 value 排序）
+    for bucket in (low, mid, high):
+        selected.extend(bucket[:per])
+
+    # 如果不足 top_k，用剩余候选的 high-value 顺次补
+    chosen_keys = {(c["full_class_name"], c["method_name"]) for c in selected}
+    for c in candidates:
+        if len(selected) >= top_k:
+            break
+        k = (c["full_class_name"], c["method_name"])
+        if k in chosen_keys:
+            continue
+        selected.append(c)
+        chosen_keys.add(k)
+
+    # 最终按 value 再排一次（输出更有可读性）
+    selected.sort(key=lambda x: -x["value"])
+    return selected[:top_k]
 
 
 def _write_yaml(candidates: List[Dict], out_path: str):
@@ -525,10 +720,13 @@ def main():
     # 小方法也要保留样本多样性，所以 min-lines=5；
     # 每类最多 4 个以覆盖重载，避免 12 个候选被 2~3 个类垄断。
     parser.add_argument("--top", type=int, default=15, help="输出候选数量")
-    parser.add_argument("--min-lines", type=int, default=5)
+    parser.add_argument("--min-lines", type=int, default=10,
+                        help="方法最小总行数（含签名+体），默认 10，保证样本有足够可覆盖点")
     parser.add_argument("--max-coverage", type=float, default=95.0,
                         help="只保留行覆盖率 < 该值(%%) 的方法；默认 95")
     parser.add_argument("--max-per-class", type=int, default=4)
+    parser.add_argument("--no-strata", action="store_true",
+                        help="禁用分层采样，回过头按 value 纯排名挑前 N 个")
     parser.add_argument("--force", action="store_true", help="强制重跑 baseline")
     parser.add_argument("--out", default=str(Path(__file__).parent / "methods.yaml"))
     args = parser.parse_args()
@@ -558,6 +756,7 @@ def main():
         min_lines=args.min_lines,
         max_coverage=args.max_coverage,
         max_per_class=args.max_per_class,
+        strata=not args.no_strata,
     )
     if not candidates:
         print("[pick] ✗ 没有符合条件的候选方法")

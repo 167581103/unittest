@@ -70,6 +70,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         cmd += ["--fix-retries", str(args.fix_retries)]
     if args.filter_unrunnable:
         cmd += ["--filter-unrunnable"]
+    if args.no_prefix:
+        cmd += ["--no-prefix"]
+    if args.no_rag:
+        cmd += ["--no-rag"]
+    if getattr(args, "artifact_root", None):
+        cmd += ["--artifact-root", args.artifact_root]
     if args.extra:
         cmd += args.extra
     print(f"[main] → {' '.join(cmd)}")
@@ -206,6 +212,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="FixLoop 最大重试轮数（0 = 禁用 FixLoop）")
     sr.add_argument("--filter-unrunnable", action="store_true",
                     help="运行前过滤 private 方法 / 仅私有构造器类的实例方法")
+    sr.add_argument("--no-prefix", action="store_true",
+                    help="消融实验开关：禁用确定性前置修复（评估 FixLoop 独立价值）")
+    sr.add_argument("--no-rag", action="store_true",
+                    help="全链路 RAG 消融：Phase1 生成阶段、Phase2 pre-import 阶段、FixLoop 在检索 三处 AgenticRAG 调用全部关闭，Phase1 退化为最小上下文（仅类名/包名/签名）")
+    sr.add_argument("--artifact-root", default=None,
+                    help="实验轨迹资产根目录；启用后为每个方法保存 analysis/初版代码/prefix每轮/fix每轮 的 before/after/stderr/diff。")
     sr.add_argument("extra", nargs=argparse.REMAINDER,
                     help="透传给 experiments/run_batch.py 的额外参数")
     sr.set_defaults(func=cmd_run)

@@ -98,6 +98,15 @@ async def chat(prompt: str, system: str = None, **kw) -> str:
     副作用：将本次请求的 usage（prompt_tokens / completion_tokens）通过
     `core.token_meter.record_usage()` 计入当前协程作用域（见 core/token_meter.py）。
     外部调用方无需改动——record_usage 是纯副作用、幂等、失败不抛。
+
+    鲁棒性：内置最多 3 次重试（指数退避 2s→4s→8s），覆盖两类瞬时故障：
+      1) OpenAI SDK 抛出的网络/限流/超时异常（RateLimitError、APITimeoutError、
+         APIConnectionError、InternalServerError 等）
+      2) 上游返回 2xx 但 content 为空串/全空白（常见于内容审核命中、context 超限、
+         上游瞬时截断）；这类场景不会抛异常，调用方会拿到 "0 chars" 而无从感知。
+    仅当所有重试均失败时：
+      - 若最后一次是异常 → 抛出该异常（让调用方决定）
+      - 若最后一次是空响应 → 返回该空串（保持原始契约，不隐藏问题）
     """
     client = _get_chat_client()
 
@@ -113,23 +122,63 @@ async def chat(prompt: str, system: str = None, **kw) -> str:
             **kw
         )
 
-    # 把同步阻塞调用丢到线程池，释放事件循环，让 gather 真正并行
-    resp = await asyncio.to_thread(_call)
+    max_attempts = 3
+    last_exc: Exception = None
+    last_content: str = ""
 
-    # ── token 记账（不破坏 chat() 的字符串返回契约）─────────────
-    try:
-        usage = getattr(resp, "usage", None)
-        if usage is not None:
-            from core.token_meter import record_usage
-            record_usage(
-                prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
-                completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
-            )
-    except Exception:
-        # 记账失败绝不影响主流程
-        pass
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # 把同步阻塞调用丢到线程池，释放事件循环，让 gather 真正并行
+            resp = await asyncio.to_thread(_call)
+        except Exception as e:
+            last_exc = e
+            if attempt < max_attempts:
+                backoff = 2 ** attempt  # 2s, 4s, 8s
+                print(f"  [LLM] chat() attempt {attempt}/{max_attempts} raised "
+                      f"{type(e).__name__}: {e}; retrying in {backoff}s...")
+                await asyncio.sleep(backoff)
+                continue
+            # 最后一次仍失败：抛出
+            raise
 
-    return resp.choices[0].message.content
+        # ── token 记账（不破坏 chat() 的字符串返回契约）─────────────
+        try:
+            usage = getattr(resp, "usage", None)
+            if usage is not None:
+                from core.token_meter import record_usage
+                record_usage(
+                    prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+                    completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+                )
+        except Exception:
+            # 记账失败绝不影响主流程
+            pass
+
+        # 提取 content，防御 SDK 返回结构异常
+        try:
+            content = resp.choices[0].message.content or ""
+        except Exception as e:
+            last_exc = e
+            content = ""
+
+        if content and content.strip():
+            return content
+
+        # 空响应：再试
+        last_content = content
+        if attempt < max_attempts:
+            backoff = 2 ** attempt
+            finish_reason = None
+            try:
+                finish_reason = resp.choices[0].finish_reason
+            except Exception:
+                pass
+            print(f"  [LLM] chat() attempt {attempt}/{max_attempts} returned empty content "
+                  f"(finish_reason={finish_reason}); retrying in {backoff}s...")
+            await asyncio.sleep(backoff)
+
+    # 所有重试均为空响应：返回最后一次的空串，保持原始契约
+    return last_content
 
 
 # ============ 方法解读与测试用例设计 ============
@@ -155,7 +204,10 @@ async def analyze_method(
     """
     full_class_name = full_class_name or class_name
 
-    # ── 合并版：1次LLM调用完成理解+覆盖分析+用例设计；失败时再做一次 JSON-only 兜底 ────────────
+    # 导入 token_meter 的 phase() 上下文管理器，给本函数内的 chat 红框标阶段
+    from core.token_meter import phase as _phase
+
+    # ── 合并版：1次LLM调用完成理解+覆盖分析+用例设计；失败时再做一次 JSON-only 兑底 ────────────
     print("  [LLM] Analyzing method (understanding + coverage + test design)...")
     merged_prompt = PROMPTS["analyze_all_in_one"].format(
         full_class_name=full_class_name,
@@ -164,9 +216,9 @@ async def analyze_method(
         context=context or "No context",
     )
     # Bigger token budget: task3 JSON must not be truncated after two long analysis sections.
-    response = await chat(merged_prompt, temperature=0.4, max_tokens=8000)
+    with _phase("analyze"):
+        response = await chat(merged_prompt, temperature=0.4, max_tokens=8000)
     print(f"  [LLM] Analysis done ({len(response)} chars)")
-
     # 从合并响应中解析测试用例
     test_cases = _parse_test_cases(response)
 
@@ -188,7 +240,8 @@ async def analyze_method(
             "Context:\n"
             f"{context or 'No context'}\n"
         )
-        retry_resp = await chat(retry_prompt, temperature=0.2, max_tokens=3000)
+        with _phase("analyze_retry"):
+            retry_resp = await chat(retry_prompt, temperature=0.2, max_tokens=3000)
         retry_cases = _parse_test_cases(retry_resp)
         if retry_cases:
             test_cases = retry_cases
@@ -878,6 +931,8 @@ async def generate_test(
     junit_profile = _junit_profile_text(junit_version)
 
     # ═══════════════════ 一步式生成（消融实验）═══════════════════
+    # 分阶段记录 token（generate_oneshot / skeleton / per_method）
+    from core.token_meter import phase as _phase
     if one_shot:
         try:
             print(f"  [LLM] One-shot generating full test class {test_class_name} (JUnit {int(junit_version)})...")
@@ -892,7 +947,8 @@ async def generate_test(
                 test_cases=json.dumps(test_cases, ensure_ascii=False, indent=2),
             ) + "\n\n" + junit_profile
             # 一次性生成完整测试类，需要更大 token 预算
-            resp = await chat(oneshot_prompt, temperature=0.4, max_tokens=6000)
+            with _phase("generate_oneshot"):
+                resp = await chat(oneshot_prompt, temperature=0.4, max_tokens=6000)
             code = _extract_code(resp)
 
             has_class = bool(re.search(r'\bclass\s+\w+', code))
@@ -939,7 +995,8 @@ async def generate_test(
         ) + "\n\n" + junit_profile
         print(f"  [LLM] Generating skeleton for {test_class_name} (JUnit {int(junit_version)})...")
         placeholder = "// __TEST_METHODS_PLACEHOLDER__"
-        skeleton_resp = await chat(skeleton_prompt, temperature=0.3, max_tokens=2000)
+        with _phase("generate_skeleton"):
+            skeleton_resp = await chat(skeleton_prompt, temperature=0.3, max_tokens=2000)
         skeleton_code = _extract_code(skeleton_resp)
 
         norm = _normalize_skeleton_code(skeleton_code, placeholder=placeholder)
@@ -957,7 +1014,8 @@ async def generate_test(
                 placeholder=placeholder,
                 junit_version=junit_version,
             )
-            retry_resp = await chat(retry_prompt, temperature=0.1, max_tokens=2500)
+            with _phase("generate_skeleton_retry"):
+                retry_resp = await chat(retry_prompt, temperature=0.1, max_tokens=2500)
             retry_code = _extract_code(retry_resp)
             norm_retry = _normalize_skeleton_code(retry_code, placeholder=placeholder)
             if not norm_retry["ok"]:
@@ -988,7 +1046,8 @@ async def generate_test(
                     context=context or "无上下文",
                     test_case=json.dumps(case, ensure_ascii=False, indent=2),
                 ) + "\n\n" + junit_profile
-                m_resp = await chat(method_prompt, temperature=0.4, max_tokens=2000)
+                with _phase("generate_per_method"):
+                    m_resp = await chat(method_prompt, temperature=0.4, max_tokens=2000)
                 m_code = _extract_single_method(m_resp)
                 if m_code:
                     method_snippets.append(m_code)

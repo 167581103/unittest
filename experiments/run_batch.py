@@ -54,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from llm.llm import analyze_method, generate_test, _fix_imports
 from evaluation.evaluator import TestEvaluator
 from core.project_config import load_project, list_projects
+from core.artifact_logger import ArtifactLogger
 from core.fix_loop import (
     fix_compile_errors,
     parse_compile_errors,
@@ -72,6 +73,72 @@ RESULTS_DIR = Path("/data/workspace/unittest/experiment_results")
 METHODS_YAML = Path(__file__).parent / "methods.yaml"
 GENERATED_DIR = Path("/tmp/batch_generated")
 _CFG = None  # ProjectConfig，在 main() 里赋值
+
+# 实验资产落盘根目录；由 --artifact-root / ARTIFACT_ROOT env var 设置。
+# 空字符串 = 禁用（ArtifactLogger 自动降级为 no-op）。
+ARTIFACT_ROOT: str = ""
+# 当前场次名（来自 --suffix），用作 artifact 子目录名。
+ARTIFACT_SCENE: str = "default"
+
+# 全链路 RAG 消融开关：True 时 Phase1 生成阶段、Phase2 pre-import 阶段、
+# FixLoop 阶段都不会调用 AgenticRAG（用于评估 RAG 在完整流水线中的真实贡献）。
+# 在 main() 入口按 --no-rag 赋值；Phase1 是 async 协程群，透过模块级全局避免层层透传。
+DISABLE_RAG: bool = False
+# 按方法 id 索引的 ArtifactLogger 实例；Phase1 生成时写入，Phase2 评估时复用。
+# （Phase1 是并发协程，每个方法各自独立 key，互不冲突）
+_ARTIFACT_REGISTRY: Dict[str, ArtifactLogger] = {}
+
+
+def _get_or_create_artifact(spec: "MethodSpec", one_shot: bool = False) -> ArtifactLogger:
+    """按 spec.id 取已有 logger；不存在则创建新的并注册。"""
+    if spec.id in _ARTIFACT_REGISTRY:
+        return _ARTIFACT_REGISTRY[spec.id]
+    logger = ArtifactLogger.create(
+        ARTIFACT_ROOT, ARTIFACT_SCENE, spec.id,
+        method_meta={
+            "id": spec.id,
+            "full_class_name": spec.full_class_name,
+            "simple_class_name": spec.simple_class_name,
+            "method_name": spec.method_name,
+            "method_signature": spec.method_signature,
+            "total_lines": spec.total_lines,
+            "mode": "one_shot" if one_shot else "two_step",
+        },
+    )
+    _ARTIFACT_REGISTRY[spec.id] = logger
+    return logger
+
+
+def _count_fix_attempts(fix_log: List[str]) -> int:
+    """从 fix_log 文本里粗略提取 FixLoop 实际跑了多少轮（按 "Attempt N" 去重）。"""
+    if not fix_log:
+        return 0
+    seen = set()
+    for ln in fix_log:
+        if not isinstance(ln, str):
+            continue
+        m = re.match(r"\s*Attempt\s+(\d+)", ln)
+        if m:
+            seen.add(int(m.group(1)))
+    return len(seen)
+
+
+def _derive_artifact_status(eval_record: Dict) -> str:
+    """从 eval_record 推导轨迹状态字符串。"""
+    if eval_record.get("eval_error"):
+        return "eval_error"
+    stage = eval_record.get("compile_success_stage")
+    if stage == "initial":
+        return "initial_ok"
+    if stage == "after_prefix":
+        return "prefix_rescued"
+    if stage == "after_fix":
+        return "fix_success"
+    if eval_record.get("fix_attempted") and not eval_record.get("fix_success"):
+        return "fix_failed"
+    if not eval_record.get("compile_success"):
+        return "compile_failed"
+    return "unknown"
 
 # 延迟加载的共享 AgenticRAG（首次失败时加载一次，之后 fix loop 之间复用）
 _shared_agentic_rag = None
@@ -202,8 +269,13 @@ class MethodSpec:
 
 async def _gen_one(spec: MethodSpec, sem: asyncio.Semaphore, one_shot: bool) -> Dict:
     """单个方法走 analyze + generate，受 Semaphore 限流"""
+    # 用手动 try/finally 管理 ContextVar，避免增加缩进层级
+    from core.token_meter import set_scope, reset_scope
     async with sem:
+        _scope = set_scope(spec.id, "gen")
         t0 = time.time()
+        # ── 轨迹记录器：Phase1 就地创建，Phase2 还会再次使用 ──
+        artifact = _get_or_create_artifact(spec, one_shot=one_shot)
         result = {
             "id": spec.id,
             "full_class_name": spec.full_class_name,
@@ -216,22 +288,35 @@ async def _gen_one(spec: MethodSpec, sem: asyncio.Semaphore, one_shot: bool) -> 
             "test_cases_count": 0,
             "methods_generated": 0,
             "gen_duration_s": 0.0,
+            "artifact_dir": str(artifact.method_dir) if artifact.method_dir else None,
         }
         try:
             _stage("GEN", spec.id, f"analyze: {spec.simple_class_name}.{spec.method_name}")
             _junit_ver = int(_CFG.junit_version) if _CFG else 4
+
+            # ── 上下文装配：两条路径互斥 ────────────────────────────
+            # (A) 默认：AgenticRAG 在线检索，产出「类结构 + 可用公共方法 + 重载消歧 + 依赖方法 + 已有测试模式」
+            # (B) 消融（--no-rag）：退化为 _build_minimal_context，只告诉 LLM 类名/包名/签名
+            ctx = await _build_gen_context(spec)
+            artifact.log_event(
+                f"gen context mode = {'minimal (no-rag)' if DISABLE_RAG else 'agentic-rag'}; "
+                f"context_chars={len(ctx)}"
+            )
+
             analysis = await analyze_method(
                 class_name=spec.simple_class_name,
                 method_signature=spec.method_signature,
                 method_code=spec.method_code,
-                context=_build_minimal_context(spec),
+                context=ctx,
                 full_class_name=spec.full_class_name,
                 junit_version=_junit_ver,
             )
+            artifact.log_analysis(analysis or {})
             cases = analysis.get("test_cases") or []
             result["test_cases_count"] = len(cases)
             if not cases:
                 result["gen_error"] = "analyze_method produced 0 test cases"
+                artifact.log_event("analyze produced 0 cases, abort")
                 return result
 
             _stage("GEN", spec.id, f"generate: {len(cases)} cases, one_shot={one_shot}")
@@ -240,7 +325,7 @@ async def _gen_one(spec: MethodSpec, sem: asyncio.Semaphore, one_shot: bool) -> 
                 method_signature=spec.method_signature,
                 method_code=spec.method_code,
                 output_path=spec.output_file,
-                context=_build_minimal_context(spec),
+                context=ctx,
                 test_class_name=spec.test_class_name,
                 full_class_name=spec.full_class_name,
                 package_name=spec.package,
@@ -251,15 +336,29 @@ async def _gen_one(spec: MethodSpec, sem: asyncio.Semaphore, one_shot: bool) -> 
             result["gen_success"] = bool(gen.get("success"))
             result["gen_error"] = gen.get("error")
             result["methods_generated"] = gen.get("methods_generated", 0)
+
+            # 记录 Phase1 最终产出（读取 output_file）
+            _initial_code = ""
+            try:
+                if os.path.exists(spec.output_file):
+                    with open(spec.output_file, "r", encoding="utf-8") as f:
+                        _initial_code = f.read()
+            except Exception:
+                pass
+            artifact.log_initial_code(
+                _initial_code, result["gen_success"], result["gen_error"],
+            )
         except Exception as e:
             result["gen_error"] = f"exception: {e}\n{traceback.format_exc(limit=3)}"
+            artifact.log_event(f"exception in gen: {e}")
         finally:
             result["gen_duration_s"] = round(time.time() - t0, 1)
+            reset_scope(_scope)
         return result
 
 
 def _build_minimal_context(spec: MethodSpec) -> str:
-    """最小上下文：告诉 LLM 这个方法的所属类、包名，后续可接 RAG。"""
+    """最小上下文：只有类名/包名/签名（用于 --no-rag 消融 或 RAG 失败时兜底）。"""
     return (
         f"Target class: {spec.full_class_name}\n"
         f"Target method signature: {spec.method_signature}\n"
@@ -270,6 +369,49 @@ def _build_minimal_context(spec: MethodSpec) -> str:
         f"If the target class constructor is not public, do NOT instantiate it directly. "
         f"Prefer invoking tested behavior through accessible public/static entry points.\n"
     )
+
+
+async def _build_gen_context(spec: MethodSpec) -> str:
+    """Phase1 生成阶段的上下文装配。
+
+    ── 默认路径（RAG 开）────────────────────────────────────────
+    调用 AgenticRAG.retrieve()，产出：
+      * 目标类结构 + Available Public Methods（防止 LLM 幻觉 API）
+      * VISIBILITY WARNING（私有字段告警）
+      * 重载消歧 section（多重载时指明被测那一个）
+      * 依赖方法/类型的源码切片
+      * Existing Test Patterns（同项目已有测试风格参考）
+    在头部附加最小上下文（类名/包名/签名），保证签名信息一定存在。
+
+    ── 消融路径（--no-rag / RAG 加载失败）──────────────────────
+    只返回 _build_minimal_context 的结果。
+    """
+    minimal = _build_minimal_context(spec)
+    if DISABLE_RAG:
+        return minimal
+
+    rag = _get_agentic_rag()
+    if rag is None:
+        # RAG 加载失败：打一条日志，安全降级
+        print(f"[RAG] gen-phase fallback to minimal context for {spec.id} (rag not available)")
+        return minimal
+
+    try:
+        retrieved = await rag.retrieve(
+            code=spec.method_code,
+            cls=spec.simple_class_name,
+            target_class=spec.full_class_name,
+            method_signature=spec.method_signature,
+        )
+    except Exception as e:
+        print(f"[RAG] gen-phase retrieve() raised for {spec.id}: {e}; fallback to minimal")
+        return minimal
+
+    if not retrieved or not retrieved.strip():
+        return minimal
+
+    # minimal 在前（签名/包名锚点） + RAG 结果在后（丰富上下文）
+    return minimal + "\n" + retrieved
 
 
 async def phase1_generate_all(specs: List[MethodSpec], concurrency: int, one_shot: bool) -> List[Dict]:
@@ -291,8 +433,16 @@ def _apply_deterministic_prefix(
     spec: MethodSpec,
     evaluator: TestEvaluator,
     max_rounds: int = 2,
+    artifact: Optional[ArtifactLogger] = None,
+    disable_rag: bool = False,
 ) -> Dict:
-    """在正式评估前执行确定性修复（规则 + 本地后处理，不调用 LLM）。"""
+    """在正式评估前执行确定性修复（规则 + 本地后处理，不调用 LLM）。
+
+    Args:
+        disable_rag: 与全链路 --no-rag 消融联动；为 True 时 pre-compile import
+            completion 不再读 RAG 索引（只靠 JDK 常用类表兜底），rule_fix 也
+            不会拿到 RAG 实例。
+    """
     result = {
         "attempted": False,
         "compile_success": False,
@@ -313,7 +463,8 @@ def _apply_deterministic_prefix(
     # 在第一次编译之前就主动扫一遍代码里用到的符号（new Foo() / Foo.xxx / Foo v = ... / (Foo)x），
     # 结合项目 RAG 索引 + JDK 常用类表，把能补的 import 直接补上。
     # 这条路径对首次编译成功率提升最直接，避免白白进 FixLoop。
-    rag_for_prefix = _get_agentic_rag()
+    # --no-rag 消融时关闭 RAG 这条腿，只保留 JDK 常用类表 + 纯规则修复。
+    rag_for_prefix = None if disable_rag else _get_agentic_rag()
     try:
         pre_added_code, pre_added_imports = _auto_add_missing_imports(
             current_code, classified={}, rag_instance=rag_for_prefix,
@@ -326,6 +477,15 @@ def _apply_deterministic_prefix(
         try:
             with open(spec.output_file, "w", encoding="utf-8") as f:
                 f.write(pre_added_code)
+            # 轨迹：pre-compile import 修改
+            if artifact is not None:
+                artifact.log_prefix_round(
+                    round_idx=0,
+                    before_code=current_code,
+                    after_code=pre_added_code,
+                    compile_stderr="",
+                    note=f"pre-compile imports added: {', '.join(pre_added_imports)}",
+                )
             current_code = pre_added_code
             result["attempted"] = True
             result["changes_applied"] += 1
@@ -337,6 +497,8 @@ def _apply_deterministic_prefix(
 
     for round_idx in range(1, max_rounds + 1):
         result["rounds"] = round_idx
+        # 本轮的"before"代码（编译前）
+        before_this_round = current_code
         success, compile_output = _compile_for_prefix(spec, evaluator)
         result["last_compile_output"] = compile_output or ""
 
@@ -351,11 +513,20 @@ def _apply_deterministic_prefix(
                     result["log"].append("Round 1: compile passed without deterministic fixes")
             else:
                 result["log"].append(f"Round {round_idx}: compile passed after deterministic fixes")
+            # 轨迹：记录一条 "empty diff" 轮，表示本轮编译即通过
+            if artifact is not None and round_idx > 0:
+                artifact.log_event(f"prefix round {round_idx}: compile ok, no change needed")
             return result
 
         errors = parse_compile_errors(compile_output or "")
         if not errors:
             result["log"].append(f"Round {round_idx}: compile failed but no parseable errors; stop prefix")
+            if artifact is not None:
+                artifact.log_prefix_round(
+                    round_idx, before_this_round, before_this_round,
+                    compile_output or "",
+                    note="compile failed but no parseable errors; stop",
+                )
             return result
 
         classified = classify_errors(errors)
@@ -371,11 +542,25 @@ def _apply_deterministic_prefix(
 
         if normalized_code == current_code:
             result["log"].append(f"Round {round_idx}: no deterministic code change; stop prefix")
+            if artifact is not None:
+                artifact.log_prefix_round(
+                    round_idx, before_this_round, normalized_code,
+                    compile_output or "",
+                    note="no deterministic change applicable; stop",
+                )
             return result
 
         try:
             with open(spec.output_file, "w", encoding="utf-8") as f:
                 f.write(normalized_code)
+            # 轨迹：本轮 before → after
+            if artifact is not None:
+                note = "; ".join(rule_fixes) if rule_fixes else "post-process only"
+                artifact.log_prefix_round(
+                    round_idx, before_this_round, normalized_code,
+                    compile_output or "",
+                    note=note[:200],
+                )
             current_code = normalized_code
             result["attempted"] = True
             result["changes_applied"] += 1
@@ -397,7 +582,9 @@ def _apply_deterministic_prefix(
 # ══════════════ Phase 2：串行评估 ══════════════
 
 async def phase2_evaluate_all(specs: List[MethodSpec], gen_results: List[Dict],
-                              fix_retries: int = 3) -> List[Dict]:
+                              fix_retries: int = 3,
+                              disable_prefix: bool = False,
+                              disable_rag: bool = False) -> List[Dict]:
     """逐个跑确定性前置修复 + TestEvaluator + FixLoop（必须串行）
 
     流程：
@@ -406,6 +593,9 @@ async def phase2_evaluate_all(specs: List[MethodSpec], gen_results: List[Dict],
       3. 若仍编译失败 → 调 fix_compile_errors（规则 + LLM + RAG），最多 fix_retries 次
       4. 若 Fix 成功，重新跑一遍测试拿覆盖率
       5. 最后记录 prefix/fix 日志与 failure_tags
+
+    Args：
+      disable_prefix: 消融实验标志；置 True 时跳过 deterministic prefix 全部步骤。
     """
     evaluator = TestEvaluator(
         project_dir=PROJECT_DIR,
@@ -421,6 +611,12 @@ async def phase2_evaluate_all(specs: List[MethodSpec], gen_results: List[Dict],
 
     for gen in gen_results:
         spec = spec_by_id[gen["id"]]
+        # 获取本方法的轨迹记录器（Phase1 已注册）
+        artifact = _get_or_create_artifact(spec)
+        # 本方法 Phase2 期间如果将有 LLM 调用（FixLoop），先把作用域切到 "fix" 阶段；
+        # 结束时 snapshot(spec.id) 会自动含 Phase1 积累的 token。
+        from core.token_meter import set_scope, reset_scope, snapshot as _token_snapshot
+        _scope = set_scope(spec.id, "fix")
         eval_record = {
             "id": gen["id"],
             "compile_success": False,
@@ -457,6 +653,10 @@ async def phase2_evaluate_all(specs: List[MethodSpec], gen_results: List[Dict],
             eval_record["eval_error"] = f"skipped: gen failed ({gen['gen_error']})"
             eval_record["failure_tags"] = ["llm_gen_failed"]
             eval_record["eval_duration_s"] = round(time.time() - t0, 1)
+            eval_record["token_meter"] = _token_snapshot(spec.id)
+            # 轨迹：收尾
+            artifact.finalize("", status="gen_failed")
+            reset_scope(_scope)
             eval_results.append(eval_record)
             continue
 
@@ -466,12 +666,27 @@ async def phase2_evaluate_all(specs: List[MethodSpec], gen_results: List[Dict],
         print("─" * 70)
         try:
             # ── STAGE 2: PREFIX ── 确定性前置修复（规则 + import 补全，不调 LLM） ─
-            prefix = _apply_deterministic_prefix(spec, evaluator)
+            if disable_prefix:
+                prefix = {"attempted": False, "compile_success": False,
+                          "changes_applied": 0, "log": ["(ablation: --no-prefix 跳过前置修复)"],
+                          "last_compile_output": ""}
+                artifact.log_event("ablation: --no-prefix skip prefix")
+            else:
+                prefix = _apply_deterministic_prefix(
+                    spec, evaluator, artifact=artifact,
+                    disable_rag=disable_rag,
+                )
             eval_record["deterministic_prefixed"] = bool(prefix.get("attempted"))
             eval_record["deterministic_prefix_success"] = bool(prefix.get("compile_success"))
             eval_record["deterministic_prefix_changes"] = int(prefix.get("changes_applied") or 0)
             eval_record["deterministic_prefix_log"] = prefix.get("log") or []
             last_compile_output = prefix.get("last_compile_output", "")
+            artifact.log_prefix_summary(
+                rounds=int(prefix.get("rounds") or 0),
+                compile_ok=bool(prefix.get("compile_success")),
+                changes_applied=int(prefix.get("changes_applied") or 0),
+                prefix_log=prefix.get("log") or [],
+            )
 
             if eval_record["deterministic_prefixed"]:
                 prefix_status = "✓" if eval_record["deterministic_prefix_success"] else "·"
@@ -494,6 +709,8 @@ async def phase2_evaluate_all(specs: List[MethodSpec], gen_results: List[Dict],
 
             # ── STAGE 4: FIXLOOP ── 仅当 STAGE 3 仍编译失败时启动 ─
             if not report.compilation_success:
+                # 轨迹：EVAL-1 编译失败的 stderr（FixLoop 的起点）
+                artifact.log_eval1_stderr(_grab_compile_stderr(spec))
                 _stage(
                     "FIXLOOP", spec.id,
                     f"评估阶段编译失败，启动修复循环（max_retries={fix_retries}）",
@@ -501,9 +718,15 @@ async def phase2_evaluate_all(specs: List[MethodSpec], gen_results: List[Dict],
                 )
                 eval_record["fix_attempted"] = True
                 fixed_code, fix_success, fix_log, last_compile_output = await _run_fix_loop(
-                    spec, evaluator, max_retries=fix_retries)
+                    spec, evaluator, max_retries=fix_retries,
+                    disable_rag=disable_rag, artifact=artifact)
                 eval_record["fix_success"] = fix_success
                 eval_record["fix_log"] = fix_log
+                artifact.log_fix_summary(
+                    fix_success=fix_success,
+                    n_attempts=_count_fix_attempts(fix_log),
+                    fix_log=fix_log,
+                )
 
                 if fix_success:
                     # Fix 通了 → 重新 evaluate 拿覆盖率。
@@ -527,6 +750,7 @@ async def phase2_evaluate_all(specs: List[MethodSpec], gen_results: List[Dict],
                     eval_record["compile_success_stage"] = "after_prefix"
                 else:
                     eval_record["compile_success_stage"] = "initial"
+                artifact.log_eval1_stderr("")  # 记一条: 首次编译即成功
 
             # ── STAGE 5: REPORT（本条记录）── 记录覆盖率（无论是否 fix）──
             eval_record["compile_success"] = bool(report.compilation_success)
@@ -597,16 +821,51 @@ async def phase2_evaluate_all(specs: List[MethodSpec], gen_results: List[Dict],
         except Exception as e:
             eval_record["eval_error"] = f"{e}\n{traceback.format_exc(limit=3)}"
             eval_record["failure_tags"] = ["evaluator_exception"]
+            artifact.log_event(f"exception in phase2: {e}")
         finally:
             eval_record["eval_duration_s"] = round(time.time() - t0, 1)
+            eval_record["token_meter"] = _token_snapshot(spec.id)
+            reset_scope(_scope)
+            # 轨迹收尾：写 99_FINAL.java + 更新 meta
+            try:
+                with open(spec.output_file, "r", encoding="utf-8") as _f:
+                    _final_code = _f.read()
+            except Exception:
+                _final_code = ""
+            _status = _derive_artifact_status(eval_record)
+            artifact.finalize(
+                _final_code, status=_status,
+                coverage_info={
+                    "target_method_line_cov_delta":
+                        eval_record.get("target_method_line_cov_delta"),
+                    "target_method_branch_cov_delta":
+                        eval_record.get("target_method_branch_cov_delta"),
+                    "line_cov_delta": eval_record.get("line_cov_delta"),
+                    "branch_cov_delta": eval_record.get("branch_cov_delta"),
+                    "compile_success": eval_record.get("compile_success"),
+                    "compile_success_stage":
+                        eval_record.get("compile_success_stage"),
+                    "failure_tags": eval_record.get("failure_tags"),
+                },
+            )
         eval_results.append(eval_record)
 
     return eval_results
 
 
 async def _run_fix_loop(spec: MethodSpec, evaluator: TestEvaluator,
-                       max_retries: int = 3):
-    """在 spec.output_file 上跑 FixLoop；返回 (fixed_code, success, fix_log, last_output)"""
+                       max_retries: int = 3,
+                       disable_rag: bool = False,
+                       artifact: Optional[ArtifactLogger] = None):
+    """在 spec.output_file 上跑 FixLoop；返回 (fixed_code, success, fix_log, last_output)
+
+    Args:
+        disable_rag: 消融开关；置 True 时不把 AgenticRAG 传给 fix_compile_errors，
+            这会让 fix_loop 内部 `need_rag` 分支直接落到 "skip"，仅保留
+            规则修复 + LLM 修复两层（用于评估 RAG 的独立贡献，对应 C5 消融）。
+        artifact: 轨迹记录器；传入后每轮 compile_fn 调用都会被拦截，
+            记录 before/after/stderr/diff。
+    """
     # 拿到首次失败的编译输出（evaluator 不直接暴露，这里重跑一次拿 stderr）
     with open(spec.output_file, "r", encoding="utf-8") as f:
         current_code = f.read()
@@ -616,6 +875,16 @@ async def _run_fix_loop(spec: MethodSpec, evaluator: TestEvaluator,
     _, compile_output = evaluator._compile_test_with_output(
         evaluator._actual_test_class or spec.full_test_class)
 
+    # 轨迹捕获状态：用闭包捕获"上一轮的 after"和"上一轮的 stderr"
+    # 这样每次 try_compile(code) 被 FixLoop 调用时，
+    # 我们就能把 (prev_after_code, prev_stderr_after) 和
+    # (this_code=before_this_attempt, this_stderr=stderr_before_this_attempt) 连成一条记录。
+    _attempt_state = {
+        "prev_code": current_code,       # 进入 FixLoop 前的代码 = attempt 1 的 before
+        "prev_stderr": compile_output,    # 进入 FixLoop 前的编译错误 = attempt 1 的 stderr_before
+        "attempt_idx": 0,
+    }
+
     def try_compile(fixed_code: str):
         # 写回原 output_path，再拷到工程的测试目录下，编译
         with open(spec.output_file, "w", encoding="utf-8") as f:
@@ -623,9 +892,28 @@ async def _run_fix_loop(spec: MethodSpec, evaluator: TestEvaluator,
         evaluator._cleanup_old_generated_tests()
         evaluator._copy_test_file(spec.output_file, spec.full_test_class)
         actual_cls = evaluator._actual_test_class or spec.full_test_class
-        return evaluator._compile_test_with_output(actual_cls)
+        success, stderr_after = evaluator._compile_test_with_output(actual_cls)
 
-    agentic_rag = _get_agentic_rag()
+        # 轨迹：本轮 attempt N 完整记录
+        if artifact is not None:
+            _attempt_state["attempt_idx"] += 1
+            idx = _attempt_state["attempt_idx"]
+            artifact.log_fix_attempt(
+                attempt_idx=idx,
+                before_code=_attempt_state["prev_code"],
+                after_code=fixed_code,
+                stderr_before=_attempt_state["prev_stderr"],
+                stderr_after=("" if success else (stderr_after or "")),
+                decision_note=("compile ok" if success else "still failing"),
+            )
+
+        # 更新状态：下一次调用时，本次的 after 就是下一次的 before
+        _attempt_state["prev_code"] = fixed_code
+        _attempt_state["prev_stderr"] = stderr_after or ""
+
+        return success, stderr_after
+
+    agentic_rag = None if disable_rag else _get_agentic_rag()
     _junit_ver = int(_CFG.junit_version) if _CFG else 4
     fixed_code, success, fix_log = await fix_compile_errors(
         code=current_code,
@@ -748,6 +1036,38 @@ def _summary(rows: List[Dict]) -> Dict:
         for t in (r.get("failure_tags") or []):
             tag_count[t] = tag_count.get(t, 0) + 1
 
+    # ─── Token 计量聚合（论文成本指标） ──────────────────
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_llm_calls = 0
+    by_phase_tokens: Dict[str, Dict[str, int]] = {}
+    for r in rows:
+        tm = r.get("token_meter") or {}
+        total_prompt_tokens += int(tm.get("total_prompt_tokens") or 0)
+        total_completion_tokens += int(tm.get("total_completion_tokens") or 0)
+        total_llm_calls += int(tm.get("total_calls") or 0)
+        for ph, stats in (tm.get("by_phase") or {}).items():
+            agg = by_phase_tokens.setdefault(ph, {"calls": 0, "prompt": 0, "completion": 0})
+            agg["calls"] += int(stats.get("calls") or 0)
+            agg["prompt"] += int(stats.get("prompt_tokens") or 0)
+            agg["completion"] += int(stats.get("completion_tokens") or 0)
+
+    total_tokens = total_prompt_tokens + total_completion_tokens
+    # 每覆盖行新增的 token 成本（核心成本效益指标）
+    # 用方法级 Delta 乘以方法级总行数估计"新增覆盖的绝对行数"
+    total_new_covered_lines_est = 0
+    for r in rows:
+        if not r.get("compile_success"):
+            continue
+        dpct = r.get("target_method_line_cov_delta")
+        tot = r.get("method_total_lines")
+        if dpct is None or not tot:
+            continue
+        total_new_covered_lines_est += max(0.0, (dpct / 100.0) * tot)
+    total_new_covered_lines_est = round(total_new_covered_lines_est, 1)
+    tokens_per_covered_line = (round(total_tokens / total_new_covered_lines_est, 1)
+                               if total_new_covered_lines_est > 0 else None)
+
     return {
         "total": total,
         "gen_success": gen_ok,
@@ -770,6 +1090,15 @@ def _summary(rows: List[Dict]) -> Dict:
         "methods_line_improved": improved_line,
         "methods_branch_improved": improved_branch,
         "failure_tag_count": tag_count,
+        # ★ Token 成本指标
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_completion_tokens": total_completion_tokens,
+        "total_tokens": total_tokens,
+        "total_llm_calls": total_llm_calls,
+        "avg_tokens_per_method": round(total_tokens / total, 1) if total else 0,
+        "total_new_covered_lines_est": total_new_covered_lines_est,
+        "tokens_per_new_covered_line": tokens_per_covered_line,
+        "tokens_by_phase": by_phase_tokens,
     }
 
 
@@ -792,6 +1121,27 @@ def _write_markdown(rows: List[Dict], out_path: Path, meta: Dict):
         f"（{s['methods_branch_improved']}/{s['total']} 个方法有效提升）",
         f"- 类整体行覆盖率平均提升（副指标）: {s['avg_line_coverage_delta']:+.2f}%",
         f"- 类整体分支覆盖率平均提升（副指标）: {s['avg_branch_coverage_delta']:+.2f}%",
+        "",
+        f"### Token 成本",
+        "",
+        f"- LLM 调用总次数: **{s['total_llm_calls']}**",
+        f"- Prompt tokens: {s['total_prompt_tokens']:,}",
+        f"- Completion tokens: {s['total_completion_tokens']:,}",
+        f"- **总 tokens: {s['total_tokens']:,}**",
+        f"- 平均每方法 tokens: {s['avg_tokens_per_method']:,}",
+        (f"- ★ 每新增覆盖行成本: **{s['tokens_per_new_covered_line']:,.1f} tokens/line** "
+         f"（估算基于方法级 Δ × method_total_lines，共估 {s['total_new_covered_lines_est']} 行新增）"
+         if s.get('tokens_per_new_covered_line') else
+         "- ★ 每新增覆盖行成本: N/A（无有效覆盖增量或无 token 数据）"),
+        "",
+        "#### 按阶段拆分（tokens）",
+        "",
+        "| 阶段 | 调用数 | prompt | completion | total |",
+        "|------|-------|-------:|----------:|------:|",
+        *[
+            f"| `{ph}` | {v['calls']} | {v['prompt']:,} | {v['completion']:,} | {v['prompt']+v['completion']:,} |"
+            for ph, v in sorted((s.get('tokens_by_phase') or {}).items(), key=lambda kv: -(kv[1]['prompt']+kv[1]['completion']))
+        ],
         "",
         "> 主指标（★）衡量的是被测方法自身的覆盖率变化；类整体 Delta 在被测类已高覆盖的场景下会被稀释，仅作副指标。",
         "",
@@ -990,7 +1340,12 @@ async def _async_main(args):
     # ── Phase 2: 串行评估 ──
     _phase_banner("Phase 2 / STAGE 2-4: PREFIX → EVAL → FIXLOOP（串行，必须独占 Maven 目录）")
     t0 = time.time()
-    eval_results = await phase2_evaluate_all(specs, gen_results, fix_retries=args.fix_retries)
+    eval_results = await phase2_evaluate_all(
+        specs, gen_results,
+        fix_retries=args.fix_retries,
+        disable_prefix=args.no_prefix,
+        disable_rag=args.no_rag,
+    )
     print(f"[Phase2] 完成，耗时 {time.time() - t0:.1f}s；"
           f"编译成功 {sum(1 for e in eval_results if e['compile_success'])}/{len(eval_results)}"
           f"（前置修复拾回 {sum(1 for e in eval_results if e.get('compile_success_stage') == 'after_prefix')}，"
@@ -1031,6 +1386,12 @@ async def _async_main(args):
     print(f"  ★ 平均目标方法分支覆盖率提升: {s['avg_target_method_branch_delta']:+.2f}%  ({s['methods_branch_improved']}/{s['total']} 个方法有效提升)")
     print(f"  类整体行覆盖率提升（副指标）:   {s['avg_line_coverage_delta']:+.2f}%")
     print(f"  类整体分支覆盖率提升（副指标）: {s['avg_branch_coverage_delta']:+.2f}%")
+    print(f"  Token 成本: LLM 调用 {s['total_llm_calls']} 次 / "
+          f"prompt {s['total_prompt_tokens']:,} + completion {s['total_completion_tokens']:,} "
+          f"= {s['total_tokens']:,} tokens "
+          f"({s['avg_tokens_per_method']:,.1f}/method"
+          + (f", {s['tokens_per_new_covered_line']:.1f} tokens/new-line" if s.get('tokens_per_new_covered_line') else "")
+          + ")")
     if s["failure_tag_count"]:
         print(f"  失败归因:")
         for t, n in sorted(s["failure_tag_count"].items(), key=lambda x: -x[1]):
@@ -1041,7 +1402,7 @@ async def _async_main(args):
 
 
 def main():
-    global _CFG, PROJECT_DIR, RAG_INDEX_PATH, RAG_TEST_DIR
+    global _CFG, PROJECT_DIR, RAG_INDEX_PATH, RAG_TEST_DIR, ARTIFACT_ROOT, ARTIFACT_SCENE, DISABLE_RAG
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", default=None,
@@ -1054,10 +1415,22 @@ def main():
     parser.add_argument("--suffix", default="", help="输出文件名后缀")
     parser.add_argument("--fix-retries", type=int, default=3,
                         help="FixLoop 最大重试轮数（0 = 禁用 FixLoop）")
+    parser.add_argument("--no-prefix", action="store_true",
+                        help="消融实验开关：禁用确定性前置修复（Phase2 的 PREFIX 阶段）")
+    parser.add_argument("--no-rag", action="store_true",
+                        help="全链路 RAG 消融：Phase1 生成阶段、Phase2 pre-import 阶段、"
+                             "FixLoop 在检索 三处 AgenticRAG 调用全部关闭，"
+                             "Phase1 退化为最小上下文（仅类名/包名/签名）")
     parser.add_argument(
         "--filter-unrunnable",
         action="store_true",
         help="运行前过滤明显不可运行样本（private 方法/仅 private 构造器实例方法）",
+    )
+    parser.add_argument(
+        "--artifact-root", default=None,
+        help="实验轨迹资产根目录。若提供，则为每个方法在 "
+             "<root>/<suffix>/<id>_<Class>_<method>/ 下保存 analyze/初版代码/"
+             "prefix 每轮/fix 每轮的 before/after/stderr/diff。不提供则完全禁用。",
     )
     args = parser.parse_args()
 
@@ -1073,6 +1446,17 @@ def main():
     RAG_TEST_DIR = _CFG.src_test_java
     print(f"[project] 使用项目: {_CFG.name}  ({PROJECT_DIR})"
           + (f"  module={_CFG.module_name}" if _CFG.module_name else "  (单模块)"))
+
+    # 轨迹资产根目录；env var 优先级低于 CLI
+    ARTIFACT_ROOT = args.artifact_root or os.environ.get("ARTIFACT_ROOT", "")
+    ARTIFACT_SCENE = args.suffix or "default"
+    if ARTIFACT_ROOT:
+        print(f"[artifact] 启用轨迹归档: {ARTIFACT_ROOT}/{ARTIFACT_SCENE}")
+
+    # 全链路 RAG 消融开关：在 _gen_one / _apply_deterministic_prefix / _run_fix_loop 三处统一生效
+    DISABLE_RAG = bool(args.no_rag)
+    if DISABLE_RAG:
+        print("[ablation] --no-rag enabled: AgenticRAG disabled in GEN / PREFIX-import / FIXLOOP")
 
     return asyncio.run(_async_main(args))
 

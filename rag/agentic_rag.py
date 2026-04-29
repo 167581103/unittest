@@ -109,7 +109,9 @@ class AgenticRAG:
                 method_signature=method_signature or "",
                 code=code[:1500],
             )
-            resp = await chat(prompt, temperature=0.1, max_tokens=100)
+            from core.token_meter import phase as _phase
+            with _phase("rag_query_rewrite"):
+                resp = await chat(prompt, temperature=0.1, max_tokens=100)
             # Clean up: take first non-empty line
             query = next(
                 (line.strip() for line in resp.strip().splitlines() if line.strip()),
@@ -144,7 +146,9 @@ class AgenticRAG:
         prompt = PROMPTS["deps_analysis"].format(cls=cls, code=code)
         empty = {"methods": [], "fields": [], "types": []}
         try:
-            resp = await chat(prompt, temperature=0.1)
+            from core.token_meter import phase as _phase
+            with _phase("rag_deps_analysis"):
+                resp = await chat(prompt, temperature=0.1)
             deps = self._parse_deps_response(resp)
             self._log(
                 f"LLM分析结果: methods={deps.get('methods', [])}, "

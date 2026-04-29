@@ -178,3 +178,23 @@ def current_method() -> Optional[str]:
 
 def current_phase() -> str:
     return _CURRENT_PHASE.get()
+
+
+# ─── 低层 API（给不方便用 with 上下文管理器的调用点）─────────────
+# 外部可直接 set/reset ContextVar，用 try/finally 管理生命周期。
+#   tok = set_scope(method_id="M01", phase="gen")
+#   try: ...
+#   finally: reset_scope(tok)
+def set_scope(method_id: Optional[str], phase: str = "unspecified"):
+    """设置作用域，返回 (method_token, phase_token)，供 reset_scope 还原。"""
+    tok_m = _CURRENT_METHOD.set(method_id)
+    tok_p = _CURRENT_PHASE.set(phase)
+    return (tok_m, tok_p)
+
+
+def reset_scope(tokens) -> None:
+    tok_m, tok_p = tokens
+    try:
+        _CURRENT_PHASE.reset(tok_p)
+    finally:
+        _CURRENT_METHOD.reset(tok_m)

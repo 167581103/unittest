@@ -800,7 +800,9 @@ async def llm_fix(code: str, errors: List[dict], context: str = "",
         junit_profile=_junit_profile_text(junit_version),
     )
 
-    resp = await chat(prompt, temperature=0.3, max_tokens=4000)
+    from core.token_meter import phase as _phase
+    with _phase("fix_loop_llm"):
+        resp = await chat(prompt, temperature=0.3, max_tokens=4000)
 
     # ── Extract Java code from LLM response (robust parser) ──
     # 1) Preferred: full fenced code block ```java ... ```
