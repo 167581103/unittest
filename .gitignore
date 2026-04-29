@@ -12,3 +12,5 @@ lib/
 *_results.json
 *_dataset.json
 evaluation_results.json
+# 实验产物（数据留盘，不入 git）
+experiment_results/
