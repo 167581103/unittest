@@ -1,0 +1,330 @@
+# 候选方法列表（由 experiments/pick_methods.py 自动生成）
+# 规则：行覆盖率 < --max-coverage（默认 95%）, 总行数 ≥ --min-lines（默认 5）, 排除 private 方法，跳过仅 private 构造器类的实例方法，每类最多 --max-per-class（默认 4）个，按未覆盖行价值排序
+# 生成时间: 2026-04-28 00:21:46
+
+methods:
+  - id: M01
+    full_class_name: "org.apache.commons.lang3.reflect.TypeUtils"
+    simple_class_name: "TypeUtils"
+    method_name: "getTypeArguments"
+    method_signature: '@link TypeUtils#getTypeArguments(Type, Class)}. * @param type the type to unroll variable assignments for. * @return Type. * @since 3.2 */ public static Type unrollVariables(Map<TypeVariable<?>, Type> typeArguments, final Type type)'
+    total_lines: 17
+    covered_lines: 4
+    line_coverage: 23.5
+    branch_coverage: 15.0
+    value: 21.5
+    method_code: |
+      @link TypeUtils#getTypeArguments(Type, Class)}.
+           * @param type          the type to unroll variable assignments for.
+           * @return Type.
+           * @since 3.2
+           */
+          public static Type unrollVariables(Map<TypeVariable<?>, Type> typeArguments, final Type type) {
+              if (typeArguments == null) {
+                  typeArguments = Collections.emptyMap();
+              }
+              return unrollVariables(typeArguments, type, new HashSet<>());
+          }
+
+  - id: M02
+    full_class_name: "org.apache.commons.lang3.reflect.TypeUtils"
+    simple_class_name: "TypeUtils"
+    method_name: "isAssignable"
+    method_signature: '@code TypeUtils.isAssignable(cls, toClass)}. * <p> * This constructor is public to permit tools that require a JavaBean instance to operate. * </p> * * @deprecated TODO Make private in 4.0. */ @Deprecated public TypeUtils()'
+    total_lines: 25
+    covered_lines: 14
+    line_coverage: 56.0
+    branch_coverage: 46.4
+    value: 18.5
+    method_code: |
+      @code TypeUtils.isAssignable(cls, toClass)}.
+           * <p>
+           * This constructor is public to permit tools that require a JavaBean instance to operate.
+           * </p>
+           *
+           * @deprecated TODO Make private in 4.0.
+           */
+          @Deprecated
+          public TypeUtils() {
+              // empty
+          }
+
+  - id: M03
+    full_class_name: "org.apache.commons.lang3.reflect.TypeUtils"
+    simple_class_name: "TypeUtils"
+    method_name: "isAssignable"
+    method_signature: '@code TypeUtils.isAssignable(cls, toClass)}. * <p> * This constructor is public to permit tools that require a JavaBean instance to operate. * </p> * * @deprecated TODO Make private in 4.0. */ @Deprecated public TypeUtils()'
+    total_lines: 14
+    covered_lines: 6
+    line_coverage: 42.9
+    branch_coverage: 25.0
+    value: 15.5
+    method_code: |
+      @code TypeUtils.isAssignable(cls, toClass)}.
+           * <p>
+           * This constructor is public to permit tools that require a JavaBean instance to operate.
+           * </p>
+           *
+           * @deprecated TODO Make private in 4.0.
+           */
+          @Deprecated
+          public TypeUtils() {
+              // empty
+          }
+
+  - id: M04
+    full_class_name: "org.apache.commons.lang3.reflect.TypeUtils"
+    simple_class_name: "TypeUtils"
+    method_name: "isAssignable"
+    method_signature: '@code TypeUtils.isAssignable(cls, toClass)}. * <p> * This constructor is public to permit tools that require a JavaBean instance to operate. * </p> * * @deprecated TODO Make private in 4.0. */ @Deprecated public TypeUtils()'
+    total_lines: 21
+    covered_lines: 14
+    line_coverage: 66.7
+    branch_coverage: 60.0
+    value: 13.0
+    method_code: |
+      @code TypeUtils.isAssignable(cls, toClass)}.
+           * <p>
+           * This constructor is public to permit tools that require a JavaBean instance to operate.
+           * </p>
+           *
+           * @deprecated TODO Make private in 4.0.
+           */
+          @Deprecated
+          public TypeUtils() {
+              // empty
+          }
+
+  - id: M05
+    full_class_name: "org.apache.commons.lang3.ClassUtils"
+    simple_class_name: "ClassUtils"
+    method_name: "getShortClassName"
+    method_signature: '@code ClassUtils.getShortClassName(cls)}. * * <p> * This constructor is public to permit tools that require a JavaBean instance to operate. * </p> * * @deprecated TODO Make private in 4.0. */ @Deprecated public ClassUtils()'
+    total_lines: 17
+    covered_lines: 10
+    line_coverage: 58.8
+    branch_coverage: 43.8
+    value: 11.5
+    method_code: |
+      @code ClassUtils.getShortClassName(cls)}.
+           *
+           * <p>
+           * This constructor is public to permit tools that require a JavaBean instance to operate.
+           * </p>
+           *
+           * @deprecated TODO Make private in 4.0.
+           */
+          @Deprecated
+          public ClassUtils() {
+              // empty
+          }
+
+  - id: M06
+    full_class_name: "org.apache.commons.lang3.exception.ExceptionUtils"
+    simple_class_name: "ExceptionUtils"
+    method_name: "throwUnchecked"
+    method_signature: '@link #throwUnchecked(Throwable)}. */ @Deprecated public static <T> T throwUnchecked(final T throwable)'
+    total_lines: 5
+    covered_lines: 0
+    line_coverage: 0.0
+    branch_coverage: 0.0
+    value: 7.0
+    method_code: |
+      @link #throwUnchecked(Throwable)}.
+           */
+          @Deprecated
+          public static <T> T throwUnchecked(final T throwable) {
+              if (throwable instanceof RuntimeException) {
+                  throw (RuntimeException) throwable;
+              }
+              if (throwable instanceof Error) {
+                  throw (Error) throwable;
+              }
+              return throwable;
+          }
+
+  - id: M07
+    full_class_name: "org.apache.commons.lang3.ClassUtils"
+    simple_class_name: "ClassUtils"
+    method_name: "getPublicMethod"
+    method_signature: '* </pre> * * @param cls the class to check, not null. * @param methodName the name of the method. * @param parameterTypes the list of parameters. * @return the method. * @throws NullPointerException if the class is null. * @throws SecurityException if a security violation occurred. * @throws NoSuchMethodException if the method is not found in the given class or if the method doesn''t conform with the * requirements. */ public static Method getPublicMethod(final Class<?> cls, final String methodName, final Class<?>... parameterTypes) throws NoSuchMethodException'
+    total_lines: 16
+    covered_lines: 11
+    line_coverage: 68.8
+    branch_coverage: 62.5
+    value: 6.5
+    method_code: |
+      * </pre>
+           *
+           * @param cls the class to check, not null.
+           * @param methodName the name of the method.
+           * @param parameterTypes the list of parameters.
+           * @return the method.
+           * @throws NullPointerException if the class is null.
+           * @throws SecurityException if a security violation occurred.
+           * @throws NoSuchMethodException if the method is not found in the given class or if the method doesn't conform with the
+           *         requirements.
+           */
+          public static Method getPublicMethod(final Class<?> cls, final String methodName, final Class<?>... parameterTypes) throws NoSuchMethodException {
+              final Method declaredMethod = cls.getMethod(methodName, parameterTypes);
+              if (isPublic(declaredMethod.getDeclaringClass())) {
+                  return declaredMethod;
+              }
+              final List<Class<?>> candidateClasses = new ArrayList<>(getAllInterfaces(cls));
+              candidateClasses.addAll(getAllSuperclasses(cls));
+              for (final Class<?> candidateClass : candidateClasses) {
+                  if (!isPublic(candidateClass)) {
+                      continue;
+                  }
+                  final Method candidateMethod;
+                  try {
+                      candidateMethod = candidateClass.getMethod(methodName, parameterTypes);
+                  } catch (final NoSuchMethodException ex) {
+                      continue;
+                  }
+                  if (Modifier.isPublic(candidateMethod.getDeclaringClass().getModifiers())) {
+                      return candidateMethod;
+                  }
+              }
+              throw new NoSuchMethodException("Can't find a public method for " + methodName + " " + ArrayUtils.toString(parameterTypes));
+          }
+
+  - id: M08
+    full_class_name: "org.apache.commons.lang3.Conversion"
+    simple_class_name: "Conversion"
+    method_name: "binaryToByte"
+    method_signature: '. */ public static byte binaryToByte(final boolean[] src, final int srcPos, final byte dstInit, final int dstPos, final int nBools)'
+    total_lines: 11
+    covered_lines: 10
+    line_coverage: 90.9
+    branch_coverage: 66.7
+    value: 3.0
+    method_code: |
+      .
+           */
+          public static byte binaryToByte(final boolean[] src, final int srcPos, final byte dstInit, final int dstPos, final int nBools) {
+              if (src.length == 0 && srcPos == 0 || 0 == nBools) {
+                  return dstInit;
+              }
+              if (nBools - 1 + dstPos >= Byte.SIZE) {
+                  throw new IllegalArgumentException("nBools - 1 + dstPos >= 8");
+              }
+              byte out = dstInit;
+              for (int i = 0; i < nBools; i++) {
+                  final int shift = i + dstPos;
+                  final int bits = (src[i + srcPos] ? 1 : 0) << shift;
+                  final int mask = 0x1 << shift;
+                  out = (byte) (out & ~mask | bits);
+              }
+              return out;
+          }
+
+  - id: M09
+    full_class_name: "org.apache.commons.lang3.text.StrSubstitutor"
+    simple_class_name: "StrSubstitutor"
+    method_name: "replaceIn"
+    method_signature: '/** * Replaces all the occurrences of variables within the given source builder * with their matching values from the resolver. * The builder is updated with the result. * <p> * Only the specified portion of the buffer will be processed. * The rest of the buffer is not processed, but it is not deleted. * </p> * * @param source the buffer to replace in, updated, null returns zero. * @param offset the start offset within the array, must be valid. * @param length the length within the buffer to be processed, must be valid. * @return true if altered. * @since 3.2 */ public boolean replaceIn(final StringBuilder source, final int offset, final int length)'
+    total_lines: 7
+    covered_lines: 5
+    line_coverage: 71.4
+    branch_coverage: 50.0
+    value: 3.0
+    method_code: |
+      /**
+           * Replaces all the occurrences of variables within the given source builder
+           * with their matching values from the resolver.
+           * The builder is updated with the result.
+           * <p>
+           * Only the specified portion of the buffer will be processed.
+           * The rest of the buffer is not processed, but it is not deleted.
+           * </p>
+           *
+           * @param source  the buffer to replace in, updated, null returns zero.
+           * @param offset  the start offset within the array, must be valid.
+           * @param length  the length within the buffer to be processed, must be valid.
+           * @return true if altered.
+           * @since 3.2
+           */
+          public boolean replaceIn(final StringBuilder source, final int offset, final int length) {
+              if (source == null) {
+                  return false;
+              }
+              final StrBuilder buf = new StrBuilder(length).append(source, offset, length);
+              if (!substitute(buf, 0, length)) {
+                  return false;
+              }
+              source.replace(offset, offset + length, buf.toString());
+              return true;
+          }
+
+  - id: M10
+    full_class_name: "org.apache.commons.lang3.SerializationUtils"
+    simple_class_name: "SerializationUtils"
+    method_name: "clone"
+    method_signature: '@code SerializationUtils.clone(object)}. * * <p>This constructor is public to permit tools that require a JavaBean instance * to operate.</p> * * @since 2.0 * @deprecated TODO Make private in 4.0. */ @Deprecated public SerializationUtils()'
+    total_lines: 8
+    covered_lines: 6
+    line_coverage: 75.0
+    branch_coverage: 100.0
+    value: 2.0
+    method_code: |
+      @code SerializationUtils.clone(object)}.
+           *
+           * <p>This constructor is public to permit tools that require a JavaBean instance
+           * to operate.</p>
+           *
+           * @since 2.0
+           * @deprecated TODO Make private in 4.0.
+           */
+          @Deprecated
+          public SerializationUtils() {
+              // empty
+          }
+
+  - id: M11
+    full_class_name: "org.apache.commons.lang3.text.translate.CharSequenceTranslator"
+    simple_class_name: "CharSequenceTranslator"
+    method_name: "translate"
+    method_signature: '/** * Helper for non-Writer usage. * * @param input CharSequence to be translated. * @return String output of translation. */ public final String translate(final CharSequence input)'
+    total_lines: 7
+    covered_lines: 5
+    line_coverage: 71.4
+    branch_coverage: 100.0
+    value: 2.0
+    method_code: |
+      /**
+           * Helper for non-Writer usage.
+           *
+           * @param input CharSequence to be translated.
+           * @return String output of translation.
+           */
+          public final String translate(final CharSequence input) {
+              if (input == null) {
+                  return null;
+              }
+              try {
+                  final StringWriter writer = new StringWriter(input.length() * 2);
+                  translate(input, writer);
+                  return writer.toString();
+              } catch (final IOException ioe) {
+                  // this should never ever happen while writing to a StringWriter
+                  throw new UncheckedIOException(ioe);
+              }
+          }
+
+  - id: M12
+    full_class_name: "org.apache.commons.lang3.concurrent.BackgroundInitializer"
+    simple_class_name: "BackgroundInitializer"
+    method_name: "get"
+    method_signature: '@SuppressWarnings("unchecked") @Override public I get()'
+    total_lines: 7
+    covered_lines: 5
+    line_coverage: 71.4
+    branch_coverage: 0
+    value: 2.0
+    method_code: |
+      @SuppressWarnings("unchecked")
+              @Override
+              public I get() {
+                  return (I) new BackgroundInitializer(getInitializer(), getCloser(), externalExecutor);
+              }
